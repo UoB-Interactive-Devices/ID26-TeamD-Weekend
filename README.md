@@ -1,6 +1,6 @@
 # ID26-TeamD-Weekend
 ### What is our device?
-A prosthetic hand that functions as an alternative input device for desktop computers.
+A prosthetic hand that functions as an alternative input/output device for desktop computers.
 
 ### What does it do?
 Squeeze the hand; receive clicks from the finger tips; vibrate; move the fingers around.
