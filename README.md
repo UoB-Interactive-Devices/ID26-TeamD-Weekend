@@ -23,8 +23,8 @@ Squeezing and tilting.
 ## Week 2 - Basic Prototype
 We have started testing out a resistive touch matrix sensor, using Velostat. This is to test if we can detect where a hand is applying pressure.
 
-| Flat Surface | Curved Surface |
+| Testing input from microcontroller | Velostat resistive touch sensor |
 | ------------ | -------------- |
-| ![velostat](https://github.com/user-attachments/assets/f72027f7-ed56-49f7-8f69-de6843bbba8a)| - |
+| ![velostat](https://github.com/user-attachments/assets/f72027f7-ed56-49f7-8f69-de6843bbba8a)| ![velostat closeup](https://github.com/user-attachments/assets/aa0845bf-8114-4c25-b6c3-bff4cca110dc) |
 
 
