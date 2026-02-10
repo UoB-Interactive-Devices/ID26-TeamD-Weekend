@@ -10,3 +10,8 @@ User can receive physical responses (for example, vibrating when an error occurs
 
 ### How do users interact with it?
 Squeezing and tilting. 
+
+## Bodystorming our prototype
+![Hand-solo](https://github.com/user-attachments/assets/f302b5ed-1f21-4754-ba1c-63d41f51cc26)
+![bodystorming](https://github.com/user-attachments/assets/bd0960ba-c15c-47ec-8890-9a49fe82b07b)
+![hand-gripped](https://github.com/user-attachments/assets/85ef25eb-c7c0-4545-89cf-c97a753db154)
