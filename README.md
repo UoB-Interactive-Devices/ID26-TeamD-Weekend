@@ -1,4 +1,4 @@
-# ID26-TeamD-Weekend
+# Weekend Wednesday - Hand Mouse
 ### What is our device?
 A prosthetic hand that functions as an alternative input/output device for desktop computers.
 
@@ -19,4 +19,12 @@ Squeezing and tilting.
 ## Related Works
 - [Humanoid Prosthetic Hand](https://dl-acm-org.bris.idm.oclc.org/doi/pdf/10.1145/3745533.3745674) 
 - [Example silicon electronics](https://marcteyssier.com/)
+
+## Week 2 - Basic Prototype
+We have started testing out a resistive touch matrix sensor, using Velostat. This is to test if we can detect where a hand is applying pressure.
+
+| Flat Surface | Curved Surface |
+| ------------ | -------------- |
+| ![velostat](https://github.com/user-attachments/assets/f72027f7-ed56-49f7-8f69-de6843bbba8a)| - |
+
 
