@@ -27,4 +27,7 @@ We have started testing out a resistive touch matrix sensor, using Velostat. Thi
 | ------------ | -------------- |
 | ![velostat](https://github.com/user-attachments/assets/f72027f7-ed56-49f7-8f69-de6843bbba8a)| ![velostat closeup](https://github.com/user-attachments/assets/aa0845bf-8114-4c25-b6c3-bff4cca110dc) |
 
+## Situation Context
+![situation](https://github.com/user-attachments/assets/480380d4-0576-4043-b5c7-791f41ac6f41)
+
 
