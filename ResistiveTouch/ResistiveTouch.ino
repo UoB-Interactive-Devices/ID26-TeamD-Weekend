@@ -1,8 +1,8 @@
-const int ROWS = 5;
-const int COLS = 4;
+const int ROWS = 8;
+const int COLS = 6;
 
-const int ROW_PINS[ROWS] = {1, 2, 3, 4, 9}; 
-const int COL_PINS[COLS] = {5, 6, 7, 8};
+const int ROW_PINS[ROWS] = {0, 1, 2, 3, 4, 5, 6, 7}; 
+const int COL_PINS[COLS] = {23, 22, 21, 20, 19, 18};
 
 void setup() {
   Serial.begin(115200);
