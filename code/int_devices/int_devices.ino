@@ -13,6 +13,8 @@ void setup() {
     pinMode(pins[i], INPUT_PULLDOWN);
   }
 
+  Serial.println("Board initialised...");
+
 }
 
 void loop() {
