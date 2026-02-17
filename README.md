@@ -4,6 +4,10 @@
 
 *Microsoft Form*: https://forms.office.com/Pages/DesignPageV2.aspx?subpage=design&FormId=MH_ksn3NTkql2rGM8aQVG-VTIraheGVBvno3QTnYXLpUNTBDSkNGRzAzWVdXUThVR1lJWEFCTU9QSi4u&Token=e14414713e00484b85fd9fdebb451d45
 
+# Hardware
+Teensy board manager url: https://www.pjrc.com/teensy/package_teensy_index.json
+
+
 ### What is our device?
 A prosthetic hand that functions as an alternative input/output device for desktop computers.
 
