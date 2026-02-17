@@ -6,7 +6,9 @@
 
 # Hardware
 Teensy board manager url: https://www.pjrc.com/teensy/package_teensy_index.json
+Pinout: https://www.pjrc.com/teensy/card9a_rev2_web.pdf
 
+# Info
 
 ### What is our device?
 A prosthetic hand that functions as an alternative input/output device for desktop computers.
