@@ -1,10 +1,12 @@
-const int pins[] = {25, 26, 27, 28, 29, 30, 31, 32}; // Pins in use
+const int pins[] = {36, 35, 34, 33, 29, 30, 31, 32}; // Pins in use
 const char* labels[] = {"A", "S", "E", "T", "N", "I", "O", "P"}; // ASETNIOP keys
 const int pinCount = 8; // Keyboard size
 
+
+
 void setup() {
   // put your setup code here, to run once:
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.setTimeout(1);
 
   pinMode(LED_BUILTIN, OUTPUT);  
