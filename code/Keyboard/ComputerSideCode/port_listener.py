@@ -68,13 +68,17 @@ while True:
             string = read_from_port()
             if string:
                 line = process_string(string)
-                if check_for_capital(string):
-                    line = line.capitalize()
+                if line == "backspace":
+                    pyautogui.press('backspace')
+                    print(f"Pressed: {string} -> {line}")
+                else:
+                    if check_for_capital(string):
+                        line = line.capitalize()
 
-                print(f"Pressed: {string} -> {line}")
+                    print(f"Pressed: {string} -> {line}")
 
-                for i in range(len(line)): # write with pyautogui one character at a time to allow for capitalisation and spaces (and eventually partials)
-                    pyautogui.press(line[i])
+                    for i in range(len(line)): # write with pyautogui one character at a time to allow for capitalisation and spaces (and eventually partials)
+                        pyautogui.press(line[i])
 
     except serial.SerialException:
         print("Connection lost. Reconnecting...")

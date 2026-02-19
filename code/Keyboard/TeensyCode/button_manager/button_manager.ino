@@ -1,9 +1,9 @@
-const int pins[] = {36, 35, 34, 33, 29, 30, 31, 32}; // Pins in use
-const char* labels[] = {"A", "S", "E", "T", "N", "I", "O", "P"}; // ASETNIOP keys
-bool pressed[] = {false, false, false, false, false, false, false, false};
-const int pinCount = 8; // Keyboard size'
+const int pins[] = {36, 35, 34, 33, 29, 30, 31, 32, 27, 28}; // Pins in use
+const char* labels[] = {"a", "s", "e", "t", "n", "i", "o", "p", "v", "b"}; // ASETNIOP keys V and B are SHIFT and SPACE respectively
+bool pressed[] = {false, false, false, false, false, false, false, false, false, false};
+const int pinCount = 10; // Keyboard size'
 
-int lastState[] = {0,0,0,0,0,0,0,0};
+int lastState[] = {0,0,0,0,0,0,0,0,0,0};
 bool send = false;
 bool stateChange = false;
 
@@ -56,7 +56,7 @@ void loop() {
   if (send) { // released
     Serial.println(input);
     strcpy(input,"");
-    for (int p = 0; p < 8; p++) {
+    for (int p = 0; p < pinCount; p++) {
       pressed[p] = false;
     }
     send = false;
