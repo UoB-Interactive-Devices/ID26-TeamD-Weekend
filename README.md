@@ -4,6 +4,8 @@
 
 *Microsoft Form*: https://forms.office.com/Pages/DesignPageV2.aspx?subpage=design&FormId=MH_ksn3NTkql2rGM8aQVG-VTIraheGVBvno3QTnYXLpUNTBDSkNGRzAzWVdXUThVR1lJWEFCTU9QSi4u&Token=e14414713e00484b85fd9fdebb451d45
 
+*Consent Form*: https://forms.office.com/Pages/ResponsePage.aspx?id=MH_ksn3NTkql2rGM8aQVG2kcPm4-VpBDtgNWA4xkF7lUODdVQTlNQzlWNEFRQTNLUlhKQjREQ0tSTC4u
+
 # Hardware
 - [Teensy board manager url](https://www.pjrc.com/teensy/package_teensy_index.json)
 - [Pinout](https://www.pjrc.com/teensy/card9a_rev2_web.pdf)
