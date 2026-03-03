@@ -53,4 +53,5 @@ We have started testing out a resistive touch matrix sensor, using Velostat. Thi
 |- | - | - |
 |![3-d design](https://github.com/user-attachments/assets/15aa4bdd-0304-4f97-9469-32cdd4aed645)|![hand demo](https://github.com/user-attachments/assets/a7bd80d1-0fab-43ea-aae7-1fdf8526de1a)|![hand demo gripping](https://github.com/user-attachments/assets/b1a20005-bcda-446f-9a81-291b0462c59e)|
 
-
+## Week 5 - Finger Improvements + Control With Servo
+https://github.com/user-attachments/assets/6699d394-9102-45e7-b1bc-1c32f05aabe9
