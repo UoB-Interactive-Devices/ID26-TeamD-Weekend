@@ -4,13 +4,13 @@ import json
 import pyautogui
 from numpy._core.defchararray import capitalize
 
-numbersMode = False
+mode = "alphabetic" # "alphabetic"/"numeric" to refer to json  
 
 with open("chords.json", "r") as jsonfile:
     chords_dict = json.load(jsonfile) # load the chords dictionary from the JSON file
 
 
-def connect_to_teensy(port="/dev/ttyACM0"):
+def connect_to_teensy(port="COM7"):
     while True:
         try:
             ser = serial.Serial(port, 115200, timeout=1)
@@ -51,16 +51,14 @@ def process_string(s):
     sorted_string = ''.join(sorted_array)
 
     # check for key
-    if sorted_string in chords_dict:
-        processed_string = chords_dict[sorted_string]
+    if sorted_string in chords_dict[mode]:
+        processed_string = chords_dict[mode][sorted_string]
 
     # always add a space if there is a space character in the input, even if the key is not recognised (e.g. for partial chords)
     if space:  # B is stand in character for SPACE
         processed_string = processed_string + " "
 
     return processed_string
-
-
 
 while True:
     try:
@@ -71,6 +69,12 @@ while True:
                 if line == "backspace":
                     pyautogui.press('backspace')
                     print(f"Pressed: {string} -> {line}")
+                elif line == "switch":
+                    if mode == "alphabetic":
+                        mode = "numeric"
+                    else:
+                        mode = "alphabetic"
+                    print("Switched to mode",mode)
                 else:
                     if check_for_capital(string):
                         line = line.capitalize()
