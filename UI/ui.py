@@ -1,4 +1,8 @@
 import tkinter as tk
+from bubble import Bubble
+
+NUM_BUBBLES = 15
+UPDATE_DELAY = 30
 
 class UI:
 
@@ -44,11 +48,26 @@ class UI:
             outline="black",
         )
 
+        self.bubbles = [Bubble(self.canvas) for _ in range(NUM_BUBBLES)]
+
+        self.animate()
+
     def move_cursor(self, xOffset, yOffset):
         self.canvas.move(self.cursor, xOffset, yOffset)
 
     def click(self):
         print("click") # TODO implement
+
+    def animate(self):
+        for b in self.bubbles:
+            b.move()
+        self.canvas.after(30, self.animate)
+
+    def pop(self, x, y):
+        for b in self.bubbles[:]:
+            if b.contains(x, y):
+                self.canvas.delete(b.id)
+                self.bubbles.remove(b)
 
     def type(self, char):
         self.text_display.config(state="normal")
