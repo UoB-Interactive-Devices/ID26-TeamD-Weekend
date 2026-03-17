@@ -1,7 +1,7 @@
 import random
 
 WIDTH = 800
-HEIGHT = 600
+HEIGHT = 400
 
 class Bubble:
     def __init__(self, canvas):

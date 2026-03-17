@@ -1,7 +1,7 @@
 import tkinter as tk
 from bubble import Bubble
 
-NUM_BUBBLES = 15
+NUM_BUBBLES = 5
 UPDATE_DELAY = 30
 
 class UI:
@@ -15,8 +15,8 @@ class UI:
 
         self.canvas = tk.Canvas(
             self.frame,
-            width=400,
-            height=200,
+            width=800,
+            height=400,
             bg="white"
         )
         self.canvas.pack(padx=10, pady=10, fill="both", expand=True)
@@ -48,6 +48,8 @@ class UI:
             outline="black",
         )
 
+        self.canvas.tag_raise(self.cursor)
+
         self.bubbles = [Bubble(self.canvas) for _ in range(NUM_BUBBLES)]
 
         self.animate()
@@ -63,9 +65,9 @@ class UI:
             b.move()
         self.canvas.after(30, self.animate)
 
-    def pop(self, x, y):
-        for b in self.bubbles[:]:
-            if b.contains(x, y):
+    def pop(self, coord):
+        for b in self.bubbles:
+            if b.contains(coord[0], coord[1]):
                 self.canvas.delete(b.id)
                 self.bubbles.remove(b)
 
@@ -76,6 +78,8 @@ class UI:
             case 0xE2 | 0x90 | 0x88: # backspace in Unicode
                 if self.text_display.compare("end-1c", ">", "1.0"):
                     self.text_display.delete("end-2c", "end-1c")
+            case 'e':
+                self.pop(self.canvas.coords(self.cursor))
             case _: # just add the character
                 self.text_display.insert("end", char)
 
