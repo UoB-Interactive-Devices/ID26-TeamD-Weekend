@@ -1,8 +1,11 @@
-const int ROWS = 8;
-const int COLS = 6;
+const int ROWS = 7;
+const int COLS = 7;
 
-const int ROW_PINS[ROWS] = {0, 1, 2, 3, 4, 5, 6, 7}; 
-const int COL_PINS[COLS] = {23, 22, 21, 20, 19, 18};
+// OUTPUTS
+const int ROW_PINS[ROWS] = {7,8,9,10,11,12}; 
+
+// INPUTS - with resistors to ground
+const int COL_PINS[COLS] = {14,15,16,17,18,19};
 
 void setup() {
   Serial.begin(115200);
