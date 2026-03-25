@@ -1,0 +1,23 @@
+name: interactive_devices
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.13
+  - numpy
+  - pytorch
+  - pytorch-cuda=12.1
+  - torchvision
+  - torchaudio
+  - scikit-learn
+  - tqdm
+  - pyserial
+  - pip
+  - pip:
+      - pyautogui
+      - matplotlib
+      - pandas
+      - seaborn
+      - tensorflow
