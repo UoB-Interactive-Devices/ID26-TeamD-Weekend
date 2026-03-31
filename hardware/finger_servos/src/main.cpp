@@ -5,7 +5,7 @@ const int NUM_SERVOS = 5;
 
 Servo myServos[NUM_SERVOS];
 
-const int servoPins[NUM_SERVOS] = {2,3,4,5,6};
+const int servoPins[NUM_SERVOS] = {6,7,8,9,10};
 
 const int CLOSE_ANGLE = 0;
 const int OPEN_ANGLE = 180;
@@ -84,7 +84,7 @@ void setup() {
 } 
 
 void loop() {
-  //sweep(0,180);
-  //sweep(0,0);
-  //flat();
+  sweep(0,180);
+  sweep(0,0);
+  flat();
 }

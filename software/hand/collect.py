@@ -124,6 +124,11 @@ def main():
             writer.writerow(header)
 
     ser = connect_to_teensy()
+    
+    # Ensure hand is open before starting calibration
+    ser.write(b'O')
+    time.sleep(1)
+    
     baseline = calibrate_sensors(ser)
     print("Calibration complete!\n")
 
@@ -143,6 +148,10 @@ def main():
 
     # Loop passes first, and randomise the order of classes within each pass
     for current_pass in range(1, PASSES + 1):
+        
+        # --- NEW: Open the hand between passes ---
+        ser.write(b'O')
+        
         print(f"\n\n{'#' * 60}")
         print(f"--- STARTING PASS {current_pass}/{PASSES} ---")
         print(
@@ -153,6 +162,11 @@ def main():
         )
         print(f"{'#' * 60}")
         input("Press Enter when your hand is placed and you are ready to begin...")
+
+        # --- NEW: Close the hand to a fist for the collection pass ---
+        print("Closing to FIST position...")
+        ser.write(b'F')
+        time.sleep(1) # Give the servos physical time to move before reading data
 
         # Create a fresh copy of the selected classes and shuffle them
         pass_classes = list(selected_classes)
@@ -165,6 +179,8 @@ def main():
             time.sleep(0.5)
 
     print("\nData collection entirely complete. Thank you!")
+    # Open the hand at the very end to release
+    ser.write(b'O')
     ser.close()
 
 
