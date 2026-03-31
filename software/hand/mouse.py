@@ -1,4 +1,5 @@
 import pickle
+import sys
 import time
 from collections import deque
 
@@ -18,24 +19,27 @@ NUM_BASELINE_SAMPLES = 30
 SMOOTHING_FRAMES = 3
 MAX_EXPECTED_VALUE = 4000.0
 
-MODEL_PATH = "gesture_cnn_model.keras"  # Updated to Keras model
+MODEL_PATH = "gesture_cnn_model.keras"
 ENCODER_PATH = "label_encoder.pkl"
 
 MOUSE_MOVE_DISTANCE = 30
 MOUSE_MOVE_DELAY = 0.05
-CLICK_DELAY = 0.5  # Prevents rapid-fire clicking when squeezing
+CLICK_DELAY = 0.5
 
 # Global State Variables
 baseline = None
-stored_baseline = None  # To keep the calculated baseline safe when toggled off
-use_calibration = True  # Toggle state
-baseline_samples = []
+stored_baseline = None
+use_calibration = True
 history_buffer = deque(maxlen=SMOOTHING_FRAMES)
 last_mouse_move_time = 0
 last_click_time = 0
 ser = None
 model = None
 label_encoder = None
+fist_closed = False
+
+# New Global for Visual Wiggles
+overlay_timer = 0
 
 
 def connect_to_teensy(port=PORT, baudrate=BAUD_RATE):
@@ -47,6 +51,38 @@ def connect_to_teensy(port=PORT, baudrate=BAUD_RATE):
         except (serial.SerialException, FileNotFoundError):
             print("Waiting for Teensy...")
             time.sleep(1)
+
+
+def calibrate_sensors(ser):
+    print("\nCalibrating sensor baselines. Please keep the hand still and empty...")
+
+    ser.write(b"O")
+    time.sleep(0.5)
+    ser.reset_input_buffer()
+
+    samples = []
+    while len(samples) < NUM_BASELINE_SAMPLES:
+        if ser.in_waiting > 0:
+            raw_bytes = ser.read_all()
+            lines = raw_bytes.decode("utf-8", errors="ignore").split("\r\n")
+
+            for line in reversed(lines):
+                if line:
+                    try:
+                        data = [int(x) for x in line.split(",")]
+                        if len(data) == TOTAL_SENSORS:
+                            samples.append(np.array(data))
+                            print(
+                                f"Calibrating... {len(samples)}/{NUM_BASELINE_SAMPLES}",
+                                end="\r",
+                            )
+                            break
+                    except ValueError:
+                        continue
+        time.sleep(0.01)
+
+    print("\nCalibration complete! Matrices are initialised.")
+    return np.mean(samples, axis=0)
 
 
 def execute_action(gesture):
@@ -63,7 +99,6 @@ def execute_action(gesture):
 
 
 def on_key(event):
-    """Handles keyboard presses whilst the Matplotlib window is in focus."""
     global baseline, stored_baseline, use_calibration, fig
 
     if event.key == "c":
@@ -77,22 +112,24 @@ def on_key(event):
                 baseline = np.zeros_like(stored_baseline)
                 fig.suptitle("Calibration: OFF", fontsize=14)
                 print("\nCalibration toggled OFF", end="\r")
+    elif event.key == "q":
+        print("\n'q' pressed. Initiating shutdown...")
+        plt.close(fig)
 
 
 def update(frame):
     global \
         baseline, \
-        stored_baseline, \
-        baseline_samples, \
         history_buffer, \
         ser, \
         last_mouse_move_time, \
-        last_click_time
+        last_click_time, \
+        fist_closed, \
+        overlay_timer
 
     try:
         last_valid_array = None
 
-        # High-Speed Buffer Draining
         if ser.in_waiting > 0:
             raw_bytes = ser.read_all()
             lines = raw_bytes.decode("utf-8", errors="ignore").split("\r\n")
@@ -108,105 +145,110 @@ def update(frame):
                         continue
 
         if last_valid_array is not None:
-            # Calibration Phase
-            if stored_baseline is None:
-                baseline_samples.append(last_valid_array)
-                fig.suptitle(
-                    f"Calibrating... {len(baseline_samples)}/{NUM_BASELINE_SAMPLES}",
-                    fontsize=14,
-                )
-
-                if len(baseline_samples) >= NUM_BASELINE_SAMPLES:
-                    stored_baseline = np.mean(baseline_samples, axis=0)
-                    baseline = stored_baseline
-                    fig.suptitle(
-                        "Sensor Matrices Live (Press 'c' to toggle calibration)",
-                        fontsize=14,
-                    )
-                    print(
-                        "\nCalibration complete! Matrices and mouse control are live."
-                    )
-                return [im1, im2]
-
-            # Preprocessing
             zeroed_array = last_valid_array - baseline
             history_buffer.append(zeroed_array)
             smoothed_array = np.mean(history_buffer, axis=0)
             normalized_array = np.clip(smoothed_array / MAX_EXPECTED_VALUE, 0.0, 1.0)
 
-            # Matrix Slicing for Visualiser
             front_matrix = normalized_array[:49].reshape((7, 7))
             back_matrix = normalized_array[49:].reshape((6, 7))
 
             im1.set_array(front_matrix)
             im2.set_array(back_matrix)
 
-            # Machine Learning Prediction (CNN Format)
             front_reshape = front_matrix.reshape(1, 7, 7)
             back_reshape = back_matrix.reshape(1, 6, 7)
-            # Pad the back matrix to 7x7
             back_padded = np.pad(
                 back_reshape, ((0, 0), (0, 1), (0, 0)), mode="constant"
             )
-
-            # Stack into (1, 7, 7, 2)
             cnn_features = np.stack([front_reshape, back_padded], axis=-1)
 
-            # Predict probabilities and get the highest index
             predicted_probs = model.predict(cnn_features, verbose=0)
             predicted_idx = np.argmax(predicted_probs, axis=1)[0]
             gesture = label_encoder.inverse_transform([predicted_idx])[0]
 
             current_time = time.time()
 
-            # Execute mouse movement, click logic, and UI updates
+            if gesture != "none" and not fist_closed:
+                print("\nFirst movement detected! Closing fist.")
+                ser.write(b"F")
+                fist_closed = True
+
+            # --- Execute Actions & Visual Wiggles ---
             if gesture == "none":
-                # Explicitly show 'none' so the user knows the model is resting
                 fig.suptitle(
-                    f"Action: NONE (Press 'c' to toggle calibration)", fontsize=14
+                    f"Action: NONE (Press 'c' to toggle calibration, 'q' to quit)",
+                    fontsize=14,
                 )
                 print(f"Action: NONE    ", end="\r")
+
+                # Smoothly fade out the central text overlay
+                if overlay_timer > 0:
+                    overlay_timer -= 1
+                    action_overlay.set_alpha(overlay_timer / 15.0)
+                else:
+                    action_overlay.set_visible(False)
 
             elif gesture == "squeeze":
                 if current_time - last_click_time >= CLICK_DELAY:
                     execute_action(gesture)
-                    last_click_time = current_time
-                    fig.suptitle(
-                        f"Action: CLICK (Squeeze) (Press 'c' to toggle calibration)",
-                        fontsize=14,
-                    )
+
+                    # Visual pop for squeeze
+                    action_overlay.set_text("💥 SQUEEZE")
+                    action_overlay.set_color("yellow")
+                    action_overlay.set_alpha(1.0)
+                    action_overlay.set_visible(True)
+                    overlay_timer = 15  # Reset the fade-out timer
+
+                    ser.write(b"O")
+                    time.sleep(0.2)
+                    ser.write(b"F")
+                    ser.reset_input_buffer()
+
+                    last_click_time = time.time()
+                    fig.suptitle(f"Action: CLICK (Squeeze)", fontsize=14)
                     print(f"Action: CLICK   ", end="\r")
 
             else:
                 if current_time - last_mouse_move_time >= MOUSE_MOVE_DELAY:
                     execute_action(gesture)
                     last_mouse_move_time = current_time
-                    fig.suptitle(
-                        f"Action: {gesture.upper()} (Press 'c' to toggle calibration)",
-                        fontsize=14,
-                    )
+
+                    # Visual pop for directional movement
+                    symbols = {
+                        "left": "⬅️ LEFT",
+                        "right": "RIGHT ➡️",
+                        "up": "⬆️ UP",
+                        "down": "⬇️ DOWN",
+                    }
+                    action_overlay.set_text(symbols.get(gesture, gesture.upper()))
+                    action_overlay.set_color("cyan")
+                    action_overlay.set_alpha(1.0)
+                    action_overlay.set_visible(True)
+                    overlay_timer = 15  # Reset the fade-out timer
+
+                    fig.suptitle(f"Action: {gesture.upper()}", fontsize=14)
                     print(f"Action: {gesture.upper():8s}", end="\r")
 
     except pyautogui.FailSafeException:
         print(
             "\n\nFail-safe triggered! You moved the mouse into the corner of the screen."
         )
-        plt.close(fig)  # Close the Matplotlib window to exit the programme cleanly
+        plt.close(fig)
     except serial.SerialException:
         print("\nConnection lost. Reconnecting...")
         fig.suptitle("Connection lost. Reconnecting...", color="red", fontsize=14)
         ser.close()
         ser = connect_to_teensy()
 
-    return [im1, im2]
+    return [im1, im2, action_overlay]
 
 
 if __name__ == "__main__":
-    # Setup PyAutoGUI safeguards
+    # Re-enabled PyAutoGUI safeguards
     pyautogui.FAILSAFE = True
-    pyautogui.PAUSE = 0  # Handled manually via delays
+    pyautogui.PAUSE = 0
 
-    # Load machine learning models
     print("Loading models...")
     with open(ENCODER_PATH, "rb") as f:
         label_encoder = pickle.load(f)
@@ -214,14 +256,14 @@ if __name__ == "__main__":
     model = load_model(MODEL_PATH)
     print(f"Model loaded. Classes: {label_encoder.classes_}")
 
-    # Establish Serial Connection
     ser = connect_to_teensy()
 
-    # Initialise the Matplotlib figure
+    stored_baseline = calibrate_sensors(ser)
+    baseline = stored_baseline
+
+    # Setup UI
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     fig.canvas.manager.set_window_title("Gesture Control & Live Visualiser")
-
-    # Bind the key press event to our figure
     fig.canvas.mpl_connect("key_press_event", on_key)
 
     initial_front = np.zeros((7, 7))
@@ -239,21 +281,43 @@ if __name__ == "__main__":
     ax2.set_title("Back Matrix (6x7)")
     fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04, label="Normalised Intensity")
 
-    fig.suptitle("Calibrating Sensor Baselines...", fontsize=14)
+    # Central Action Overlay
+    action_overlay = fig.text(
+        0.5,
+        0.5,
+        "",
+        fontsize=50,
+        ha="center",
+        va="center",
+        weight="bold",
+        zorder=10,
+        bbox=dict(
+            facecolor="black", alpha=0.7, edgecolor="none", boxstyle="round,pad=0.5"
+        ),
+    )
+    action_overlay.set_visible(False)
 
     print(
-        "\nStarting mouse control & visualiser! Move mouse to top-left corner to stop."
+        "\nStarting mouse control & visualiser! Move mouse to top-left corner or press 'q' to stop."
     )
 
-    # Start the animation loop
     ani = animation.FuncAnimation(
         fig, update, interval=15, blit=False, cache_frame_data=False
     )
 
     plt.tight_layout()
-    plt.show()  # This will block until the window is closed or failsafe is triggered
 
-    # Clean up
-    if ser and ser.is_open:
-        ser.close()
-    print("\nProgramme exited cleanly.")
+    try:
+        plt.show()
+    except KeyboardInterrupt:
+        print("\nProgramme interrupted by user.")
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}")
+    finally:
+        print("\nCleaning up and releasing hand...")
+        if ser and ser.is_open:
+            ser.write(b"O")
+            time.sleep(0.5)
+            ser.close()
+        print("Programme exited cleanly.")
+        sys.exit(0)
