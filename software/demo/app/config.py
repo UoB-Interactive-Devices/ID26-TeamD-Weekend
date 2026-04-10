@@ -1,0 +1,29 @@
+from pathlib import Path
+
+PORT = "COM5"
+BAUD_RATE = 2_000_000
+TOTAL_SENSORS = 91
+
+NUM_BASELINE_SAMPLES = 30
+SMOOTHING_FRAMES = 3
+MAX_EXPECTED_VALUE = 4000.0
+
+FINE_TUNE_CLASSES = ["left", "up", "right", "down", "squeeze"]
+SAMPLES_PER_CLASS = 250
+FINE_TUNE_EPOCHS = 4
+LEARNING_RATE = 1e-4
+
+STABLE_GESTURE_FRAMES = 20
+STABLE_GESTURE_COOLDOWN_SECONDS = 1.0
+
+BASE_MOVE_SPEED = 5.0
+MAX_MOVE_SPEED = 20.0
+ACCELERATION_RATE = 0.45
+MOUSE_MOVE_DELAY = 0.06
+CLICK_DELAY = 0.5
+
+DEMO_DIR = Path(__file__).resolve().parent.parent
+HAND_DIR = DEMO_DIR.parent / "hand"
+MODEL_PATH = HAND_DIR / "gesture_cnn_model.keras"
+ENCODER_PATH = HAND_DIR / "label_encoder.pkl"
+FINE_TUNING_CSV = DEMO_DIR / "fine_tuning_gesture_data.csv"

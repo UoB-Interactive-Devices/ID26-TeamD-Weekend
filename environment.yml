@@ -5,7 +5,7 @@ channels:
   - pytorch
   - nvidia
 dependencies:
-  - python=3.13
+  - python=3.12
   - numpy
   - pytorch
   - pytorch-cuda=12.1
@@ -14,14 +14,16 @@ dependencies:
   - scikit-learn
   - tqdm
   - pyserial
+  - matplotlib
+  - pandas
+  - seaborn
+  - pyqt
+  - python-dotenv
   - pip
   - pip:
+      - pyaudio
       - pyautogui
-      - matplotlib
-      - pandas
-      - seaborn
       - tensorflow
       - openai
-      - python-dotenv 
       - SpeechRecognition
-      - pyaudio
+      - windows-toasts
