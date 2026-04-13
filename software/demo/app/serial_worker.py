@@ -339,6 +339,41 @@ class SerialInferenceWorker(QObject):
         except serial.SerialException:
             self.connection_error.emit("Failed to trigger notification finger taps.")
 
+    @pyqtSlot(int)
+    def category_group_tap(self, finger_index: int):
+        if self._serial is None or not self._serial.is_open:
+            return
+
+        if finger_index < 0 or finger_index > 4:
+            return
+
+        try:
+            self._run_finger_tap_sequence([finger_index], up_angle=180, press_time=0.17)
+        except serial.SerialException:
+            self.connection_error.emit("Failed to trigger category finger tap.")
+
+    def _run_finger_tap_sequence(
+        self,
+        finger_indices: list[int],
+        up_angle: int,
+        press_time: float,
+    ):
+        if self._serial is None or not self._serial.is_open:
+            return
+
+        self._serial.write(b"F")
+        self._serial.flush()
+        time.sleep(0.02)
+
+        finger_count = 5
+        for finger_index in finger_indices:
+            positions = [0] * finger_count
+            positions[finger_index] = up_angle
+            self._write_servo_positions(positions)
+            time.sleep(press_time)
+            self._write_servo_positions([0] * finger_count)
+            time.sleep(press_time)
+
     def _write_servo_positions(self, positions: list[int]):
         if self._serial is None or not self._serial.is_open:
             return

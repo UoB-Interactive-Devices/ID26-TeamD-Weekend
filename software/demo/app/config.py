@@ -21,9 +21,11 @@ MAX_MOVE_SPEED = 20.0
 ACCELERATION_RATE = 0.45
 MOUSE_MOVE_DELAY = 0.06
 CLICK_DELAY = 0.5
+PHOTO_SORT_GESTURE_COOLDOWN_SECONDS = 0.5
 
 DEMO_DIR = Path(__file__).resolve().parent.parent
 HAND_DIR = DEMO_DIR.parent / "hand"
+ASSETS_DIR = DEMO_DIR.parent.parent / "assets"
 MODEL_PATH = HAND_DIR / "gesture_cnn_model.keras"
 ENCODER_PATH = HAND_DIR / "label_encoder.pkl"
 FINE_TUNING_CSV = DEMO_DIR / "fine_tuning_gesture_data.csv"

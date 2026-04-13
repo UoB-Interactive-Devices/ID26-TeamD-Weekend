@@ -12,7 +12,20 @@ from .config import (
     MOUSE_MOVE_DELAY,
 )
 
+PHOTO_SORT_CATEGORY_MACROS = {
+    "categorise_group_1": "group_1",
+    "categorise_group_2": "group_2",
+    "categorise_group_3": "group_3",
+    "categorise_group_4": "group_4",
+}
+PHOTO_SORT_UNDO_MACRO = "categorise_undo"
+
 AVAILABLE_MACROS = {
+    "categorise_group_1": "Move the current photo into Group 1",
+    "categorise_group_2": "Move the current photo into Group 2",
+    "categorise_group_3": "Move the current photo into Group 3",
+    "categorise_group_4": "Move the current photo into Group 4",
+    "categorise_undo": "Undo the previous photo categorisation",
     "move_left": "Move the mouse cursor to the left",
     "move_right": "Move the mouse cursor to the right",
     "move_up": "Move the mouse cursor up",

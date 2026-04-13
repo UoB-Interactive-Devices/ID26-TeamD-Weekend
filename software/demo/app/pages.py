@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .actions import AVAILABLE_MACROS, DEFAULT_GESTURE_MAPPING
-from .game_view import TargetFieldView
+from .game_view import PhotoSortGameView
 from .heatmap_canvas import HeatmapCanvas
 
 
@@ -217,11 +217,7 @@ class MappingPage(QWidget):
 
         self.listening_label = QLabel("LISTENING NOW")
         self.listening_label.setVisible(False)
-        self.listening_label.setStyleSheet(
-            "font-size: 26px; color: #8a1322; font-weight: 800;"
-            "padding: 12px; border: 3px solid #d9485f; border-radius: 10px;"
-            "background: #ffeef1;"
-        )
+        self._set_listening_banner_style()
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(
@@ -274,13 +270,51 @@ class MappingPage(QWidget):
 
     def set_listening(self, active: bool, gesture: str = ""):
         if active:
-            gesture_text = gesture.upper() if gesture else "CURRENT"
-            self.listening_label.setText(
-                f"LISTENING NOW: SAY WHAT {gesture_text} SHOULD DO"
-            )
-        else:
-            self.listening_label.setText("LISTENING NOW")
-        self.listening_label.setVisible(active)
+            self.show_listening_banner(gesture)
+            return
+        self.hide_activity_banner()
+
+    def _set_listening_banner_style(self):
+        self.listening_label.setStyleSheet(
+            "font-size: 24px; color: #8a1322; font-weight: 800;"
+            "padding: 10px; border: 2px solid #d9485f; border-radius: 10px;"
+            "background: #ffeef1;"
+        )
+
+    def _set_processing_banner_style(self):
+        self.listening_label.setStyleSheet(
+            "font-size: 24px; color: #124f86; font-weight: 800;"
+            "padding: 10px; border: 2px solid #3d8ad6; border-radius: 10px;"
+            "background: #ebf5ff;"
+        )
+
+    def _set_success_banner_style(self):
+        self.listening_label.setStyleSheet(
+            "font-size: 22px; color: #165d2a; font-weight: 800;"
+            "padding: 10px; border: 2px solid #3bb36a; border-radius: 10px;"
+            "background: #ecfff3;"
+        )
+
+    def show_processing_banner(self):
+        self._set_processing_banner_style()
+        self.listening_label.setText("PROCESSING REMAP...")
+        self.listening_label.setVisible(True)
+
+    def show_listening_banner(self, gesture: str = ""):
+        self._set_listening_banner_style()
+        gesture_text = gesture.upper() if gesture else "CURRENT"
+        self.listening_label.setText(
+            f"LISTENING: SAY WHAT {gesture_text} SHOULD DO"
+        )
+        self.listening_label.setVisible(True)
+
+    def show_success_banner(self, remap_text: str):
+        self._set_success_banner_style()
+        self.listening_label.setText(f"REMAPPED: {remap_text}")
+        self.listening_label.setVisible(True)
+
+    def hide_activity_banner(self):
+        self.listening_label.setVisible(False)
 
     def set_status(self, text: str):
         self.status_label.setText(text)
@@ -307,7 +341,8 @@ class DashboardPage(QWidget):
         self.classification_label = QLabel("Classification: -")
         self.confidence_label = QLabel("Confidence: -")
         self.action_label = QLabel("Action: -")
-        self.score_label = QLabel("Score: 0")
+        self.score_label = QLabel("Categorised: 0")
+        self.remaining_label = QLabel("Photos Remaining: 0")
 
         mapping_title = QLabel("Gesture Mappings")
         mapping_title.setStyleSheet("font-weight: 700; color: #2e5a7e;")
@@ -319,6 +354,7 @@ class DashboardPage(QWidget):
         side_layout.addWidget(self.confidence_label)
         side_layout.addWidget(self.action_label)
         side_layout.addWidget(self.score_label)
+        side_layout.addWidget(self.remaining_label)
         side_layout.addSpacing(8)
         side_layout.addWidget(mapping_title)
         side_layout.addWidget(self.mapping_summary)
@@ -327,19 +363,20 @@ class DashboardPage(QWidget):
         content_layout = QVBoxLayout()
         content_layout.setSpacing(10)
 
-        self.target_field = TargetFieldView()
+        self.photo_sort_game = PhotoSortGameView()
         self.heatmaps = HeatmapCanvas()
 
         self.dashboard_hint = QLabel(
-            "Dashboard controls: use gestures to move and squeeze to click targets. "
-            "Press SPACE to return to gesture mapping."
+            "Photo sorting game: click the top photo to pick it up and it will follow your cursor, then click Group 1-4 to place it. "
+            "Gesture categorisation animates the photo into its group. "
+            "You can also categorise by gesture. Press SPACE to return to gesture mapping."
         )
         self.dashboard_hint.setStyleSheet(
             "font-size: 14px; font-weight: 700; color: #1a567d;"
         )
         self.dashboard_hint.setWordWrap(True)
 
-        content_layout.addWidget(self.target_field, 2)
+        content_layout.addWidget(self.photo_sort_game, 2)
         content_layout.addWidget(self.dashboard_hint)
         content_layout.addWidget(self.heatmaps, 1)
 
@@ -358,4 +395,7 @@ class DashboardPage(QWidget):
         self.action_label.setText(f"Action: {action_name}")
 
     def set_score(self, score: int):
-        self.score_label.setText(f"Score: {score}")
+        self.score_label.setText(f"Categorised: {score}")
+
+    def set_remaining(self, remaining: int):
+        self.remaining_label.setText(f"Photos Remaining: {remaining}")

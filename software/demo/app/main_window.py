@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import copy
+import time
 
 import pyautogui
 from PyQt6.QtCore import QMetaObject, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QCursor, QKeySequence, QShortcut
+from PyQt6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QStatusBar
 
-from .actions import AVAILABLE_MACROS, DEFAULT_GESTURE_MAPPING, ActionController
-from .config import FINE_TUNE_CLASSES, SAMPLES_PER_CLASS
+from .actions import (
+    AVAILABLE_MACROS,
+    DEFAULT_GESTURE_MAPPING,
+    PHOTO_SORT_CATEGORY_MACROS,
+    PHOTO_SORT_UNDO_MACRO,
+    ActionController,
+)
+from .config import (
+    FINE_TUNE_CLASSES,
+    PHOTO_SORT_GESTURE_COOLDOWN_SECONDS,
+    SAMPLES_PER_CLASS,
+)
 from .pages import CalibrationPage, DashboardPage, FineTuningPage, MappingPage
 from .serial_worker import SerialInferenceWorker
 from .speech_worker import SpeechMappingWorker
@@ -24,6 +35,7 @@ class DemoMainWindow(QMainWindow):
     request_inference = pyqtSignal()
     request_hand_tap = pyqtSignal()
     request_notification_tap = pyqtSignal()
+    request_category_tap = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
@@ -45,6 +57,10 @@ class DemoMainWindow(QMainWindow):
         self._fine_tune_collecting = False
         self._fine_tune_class_index = 0
         self._fine_tune_classes = list(FINE_TUNE_CLASSES)
+        self._last_dashboard_gesture = "none"
+        self._photo_sort_action_armed = True
+        self._last_photo_sort_action_time = 0.0
+        self._pending_gesture_sort_category: str | None = None
 
         self.custom_mapping = copy.deepcopy(DEFAULT_GESTURE_MAPPING)
         self.action_controller = ActionController()
@@ -64,8 +80,20 @@ class DemoMainWindow(QMainWindow):
 
         self._setup_shortcuts()
 
-        self.dashboard_page.target_field.score_changed.connect(
+        self.dashboard_page.photo_sort_game.score_changed.connect(
             self.dashboard_page.set_score
+        )
+        self.dashboard_page.photo_sort_game.remaining_changed.connect(
+            self.dashboard_page.set_remaining
+        )
+        self.dashboard_page.photo_sort_game.photo_sorted.connect(self._on_photo_sorted)
+        self.dashboard_page.photo_sort_game.stack_completed.connect(
+            self._on_photo_stack_completed
+        )
+
+        self.dashboard_page.set_score(self.dashboard_page.photo_sort_game.sorted_count)
+        self.dashboard_page.set_remaining(
+            self.dashboard_page.photo_sort_game.remaining_count
         )
 
         self._sync_mapping_views()
@@ -82,6 +110,7 @@ class DemoMainWindow(QMainWindow):
         self.request_inference.connect(self.worker.begin_inference)
         self.request_hand_tap.connect(self.worker.tap_hand)
         self.request_notification_tap.connect(self.worker.notification_finger_tap)
+        self.request_category_tap.connect(self.worker.category_group_tap)
 
         self.worker.connected.connect(self._on_worker_connected)
         self.worker.status_message.connect(self._on_status_message)
@@ -234,7 +263,13 @@ class DemoMainWindow(QMainWindow):
         if self.stack.currentWidget() is not self.dashboard_page:
             self.action_controller.release_mouse()
             self.dashboard_page.set_action("none")
+            self._last_dashboard_gesture = "none"
+            self._photo_sort_action_armed = True
             return
+
+        if gesture != self._last_dashboard_gesture:
+            self._last_dashboard_gesture = gesture
+            self._photo_sort_action_armed = True
 
         if gesture == "none":
             self.action_controller.release_mouse()
@@ -242,6 +277,45 @@ class DemoMainWindow(QMainWindow):
             return
 
         macro = self.custom_mapping.get(gesture, "none")
+
+        if macro in PHOTO_SORT_CATEGORY_MACROS:
+            now = time.time()
+            if (
+                not self._photo_sort_action_armed
+                or now - self._last_photo_sort_action_time
+                < PHOTO_SORT_GESTURE_COOLDOWN_SECONDS
+            ):
+                self.dashboard_page.set_action("categorise_cooldown")
+                return
+
+            category = PHOTO_SORT_CATEGORY_MACROS[macro]
+            sorted_ok = self.dashboard_page.photo_sort_game.sort_current_photo(
+                category,
+                animate=True,
+            )
+            self._photo_sort_action_armed = False
+            self._last_photo_sort_action_time = now
+            self._pending_gesture_sort_category = category if sorted_ok else None
+            self.dashboard_page.set_action(macro if sorted_ok else "none")
+            return
+
+        if macro == PHOTO_SORT_UNDO_MACRO:
+            now = time.time()
+            if (
+                not self._photo_sort_action_armed
+                or now - self._last_photo_sort_action_time
+                < PHOTO_SORT_GESTURE_COOLDOWN_SECONDS
+            ):
+                self.dashboard_page.set_action("categorise_cooldown")
+                return
+
+            undo_ok = self.dashboard_page.photo_sort_game.undo_last_sort()
+            self._photo_sort_action_armed = False
+            self._last_photo_sort_action_time = now
+            self._pending_gesture_sort_category = None
+            self.dashboard_page.set_action(macro if undo_ok else "none")
+            return
+
         try:
             action_result = self.action_controller.apply_macro(macro)
         except pyautogui.FailSafeException:
@@ -253,12 +327,30 @@ class DemoMainWindow(QMainWindow):
 
         if action_result.action_taken and macro == "click":
             self.request_hand_tap.emit()
-            cursor_pos = QCursor.pos()
-            self.dashboard_page.target_field.process_global_click(
-                (cursor_pos.x(), cursor_pos.y())
-            )
 
         self.dashboard_page.set_action(macro)
+
+    def _on_photo_sorted(self, _photo_path: str, category: str, remaining: int):
+        if self._pending_gesture_sort_category == category:
+            group_to_finger = {
+                "group_1": 0,
+                "group_2": 1,
+                "group_3": 2,
+                "group_4": 3,
+            }
+            finger_index = group_to_finger.get(category)
+            if finger_index is not None:
+                self.request_category_tap.emit(finger_index)
+            self._pending_gesture_sort_category = None
+
+        self.dashboard_page.set_action(f"categorise_{category}")
+        group_label = category.replace("_", " ").title()
+        self._status_bar.showMessage(
+            f"Photo sorted into {group_label}. {remaining} remaining."
+        )
+
+    def _on_photo_stack_completed(self):
+        self._status_bar.showMessage("All photos sorted.")
 
     def _on_stable_gesture(self, gesture: str):
         if self.stack.currentWidget() is not self.mapping_page:
@@ -300,22 +392,24 @@ class DemoMainWindow(QMainWindow):
         self.mapping_page.set_status(f"Listening for {gesture.upper()} command...")
 
     def _on_transcript_ready(self, transcript: str):
+        self.mapping_page.show_processing_banner()
         self.mapping_page.set_status(f"Heard: '{transcript}'. Mapping intent...")
 
     def _on_mapping_ready(self, gesture: str, macro: str):
         self.custom_mapping[gesture] = macro
         self._sync_mapping_views()
+        self.mapping_page.show_success_banner(f"{gesture.upper()} -> {macro}")
         self.mapping_page.set_status(
             f"Updated mapping: {gesture.upper()} -> {macro}. Press Enter when ready."
         )
 
     def _on_mapping_failed(self, reason: str):
+        self.mapping_page.hide_activity_banner()
         self.mapping_page.set_status(f"Remapping failed: {reason}")
         self._status_bar.showMessage(f"Remapping failed: {reason}")
 
     def _on_mapping_finished(self):
         self._listening = False
-        self.mapping_page.set_listening(False)
         self.mapping_page.clear_highlight()
         self._speech_thread = None
         self._speech_worker = None
@@ -375,6 +469,9 @@ class DemoMainWindow(QMainWindow):
             self.request_notification_tap.emit()
 
     def _show_dashboard(self):
+        self._last_dashboard_gesture = "none"
+        self._photo_sort_action_armed = True
+        self._pending_gesture_sort_category = None
         self.stack.setCurrentWidget(self.dashboard_page)
         self._status_bar.showMessage(
             "Dashboard active. Press Space to return to gesture mapping."
@@ -382,6 +479,9 @@ class DemoMainWindow(QMainWindow):
 
     def _show_mapping(self):
         self.stack.setCurrentWidget(self.mapping_page)
+        self._last_dashboard_gesture = "none"
+        self._photo_sort_action_armed = True
+        self._pending_gesture_sort_category = None
         self.action_controller.release_mouse()
         self._status_bar.showMessage(
             "Gesture mapping active. Press Enter for dashboard."
