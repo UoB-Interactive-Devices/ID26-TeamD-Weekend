@@ -26,6 +26,14 @@ from .speech_worker import SpeechMappingWorker
 from .styles import APP_STYLESHEET
 from .windows_notification import show_windows_toast
 
+CATEGORISATION_GESTURE_MAPPING = {
+    "left": "categorise_group_1",
+    "up": "categorise_group_2",
+    "right": "categorise_group_3",
+    "down": "categorise_group_4",
+    "squeeze": "categorise_undo",
+}
+
 
 class DemoMainWindow(QMainWindow):
     request_calibration = pyqtSignal()
@@ -53,6 +61,8 @@ class DemoMainWindow(QMainWindow):
         self._listening = False
         self._speech_thread: QThread | None = None
         self._speech_worker: SpeechMappingWorker | None = None
+        self._teensy_connected_once = False
+        self._mouse_only_mode = False
         self._fine_tune_started = False
         self._fine_tune_collecting = False
         self._fine_tune_class_index = 0
@@ -61,6 +71,7 @@ class DemoMainWindow(QMainWindow):
         self._photo_sort_action_armed = True
         self._last_photo_sort_action_time = 0.0
         self._pending_gesture_sort_category: str | None = None
+        self._categorisation_mapping_enabled = False
 
         self.custom_mapping = copy.deepcopy(DEFAULT_GESTURE_MAPPING)
         self.action_controller = ActionController()
@@ -143,23 +154,74 @@ class DemoMainWindow(QMainWindow):
 
         self.worker_thread.start()
 
-        self._status_bar.showMessage("Initialising serial connection...")
+        self._status_bar.showMessage(
+            "Initialising serial connection... Press S to skip setup and open mini game."
+        )
         self.stack.setCurrentWidget(self.calibration_page)
 
     def _sync_mapping_views(self):
         self.mapping_page.set_mapping(self.custom_mapping)
         self.dashboard_page.set_mapping(self.custom_mapping)
 
+    def _apply_mapping_profile(self, *, categorisation_mode: bool):
+        self._categorisation_mapping_enabled = categorisation_mode
+        if categorisation_mode:
+            self.custom_mapping = copy.deepcopy(CATEGORISATION_GESTURE_MAPPING)
+            profile = "categorisation"
+        else:
+            self.custom_mapping = copy.deepcopy(DEFAULT_GESTURE_MAPPING)
+            profile = "default mouse"
+
+        self._sync_mapping_views()
+        self._status_bar.showMessage(
+            f"Mapping profile: {profile}. Press C to toggle profiles."
+        )
+
+    def _toggle_mapping_profile(self):
+        self._apply_mapping_profile(
+            categorisation_mode=not self._categorisation_mapping_enabled
+        )
+
     def _on_worker_connected(self, message: str):
+        self._teensy_connected_once = True
+
+        if self._mouse_only_mode:
+            self._mouse_only_mode = False
+            self._status_bar.showMessage(
+                "Teensy connected. Press Space for gesture mapping, or keep using mouse-only mode."
+            )
+            return
+
         self._status_bar.showMessage(message)
         self.request_calibration.emit()
 
     def _on_status_message(self, message: str):
+        if self._mouse_only_mode and "Teensy" in message:
+            return
+
         self._status_bar.showMessage(message)
         self.mapping_page.set_status(message)
 
     def _on_connection_error(self, message: str):
+        if self._mouse_only_mode:
+            return
+
         self._status_bar.showMessage(message)
+
+        if not self._teensy_connected_once:
+            self._enable_mouse_only_mode(
+                "Teensy not detected. Entering mouse-only mini game mode."
+            )
+
+    def _enable_mouse_only_mode(self, status: str):
+        self._mouse_only_mode = True
+        self.action_controller.release_mouse()
+        self.dashboard_page.set_action("mouse_only")
+        self.dashboard_page.set_classification("mouse", 1.0)
+        self.mapping_page.set_status(
+            "Mouse-only mode active. Teensy not connected. Press S to stay in mini game."
+        )
+        self._show_dashboard(status)
 
     def _on_calibration_complete(self):
         self.stack.setCurrentWidget(self.fine_tuning_page)
@@ -440,6 +502,16 @@ class DemoMainWindow(QMainWindow):
         notification_shortcut.activated.connect(self._handle_notification_shortcut)
         self._notification_shortcut = notification_shortcut
 
+        skip_shortcut = QShortcut(QKeySequence("S"), self)
+        skip_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        skip_shortcut.activated.connect(self._handle_skip_shortcut)
+        self._skip_shortcut = skip_shortcut
+
+        mapping_toggle_shortcut = QShortcut(QKeySequence("C"), self)
+        mapping_toggle_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        mapping_toggle_shortcut.activated.connect(self._handle_mapping_toggle_shortcut)
+        self._mapping_toggle_shortcut = mapping_toggle_shortcut
+
     def _handle_enter_shortcut(self):
         if self.stack.currentWidget() is self.fine_tuning_page:
             if not self._fine_tune_started:
@@ -455,8 +527,32 @@ class DemoMainWindow(QMainWindow):
             self._show_dashboard()
 
     def _handle_space_shortcut(self):
+        if self._mouse_only_mode:
+            self._status_bar.showMessage(
+                "Mouse-only mode active. Connect Teensy to use gesture mapping."
+            )
+            return
+
         if self.stack.currentWidget() is self.dashboard_page:
             self._show_mapping()
+
+    def _handle_skip_shortcut(self):
+        if self._mouse_only_mode:
+            self._show_dashboard("Mouse-only mini game active.")
+            return
+
+        if not self._teensy_connected_once:
+            self._enable_mouse_only_mode(
+                "Skipped setup. Mini game opened in mouse-only mode."
+            )
+            return
+
+        self._show_dashboard(
+            "Skipped fine-tuning and mapping. Mini game opened for mouse testing."
+        )
+
+    def _handle_mapping_toggle_shortcut(self):
+        self._toggle_mapping_profile()
 
     def _handle_notification_shortcut(self):
         ok, message = show_windows_toast(
@@ -468,16 +564,31 @@ class DemoMainWindow(QMainWindow):
         if ok:
             self.request_notification_tap.emit()
 
-    def _show_dashboard(self):
+    def _show_dashboard(self, status_message: str | None = None):
         self._last_dashboard_gesture = "none"
         self._photo_sort_action_armed = True
         self._pending_gesture_sort_category = None
         self.stack.setCurrentWidget(self.dashboard_page)
+
+        if status_message is not None:
+            self._status_bar.showMessage(status_message)
+            return
+
+        if self._mouse_only_mode:
+            self._status_bar.showMessage("Dashboard active in mouse-only mode.")
+            return
+
         self._status_bar.showMessage(
             "Dashboard active. Press Space to return to gesture mapping."
         )
 
     def _show_mapping(self):
+        if self._mouse_only_mode:
+            self._status_bar.showMessage(
+                "Mouse-only mode active. Connect Teensy to use gesture mapping."
+            )
+            return
+
         self.stack.setCurrentWidget(self.mapping_page)
         self._last_dashboard_gesture = "none"
         self._photo_sort_action_armed = True
@@ -515,6 +626,14 @@ class DemoMainWindow(QMainWindow):
             Qt.Key.Key_Enter,
         ):
             self._show_dashboard()
+            return
+
+        if key == Qt.Key.Key_S:
+            self._handle_skip_shortcut()
+            return
+
+        if key == Qt.Key.Key_C:
+            self._handle_mapping_toggle_shortcut()
             return
 
         if (

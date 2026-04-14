@@ -1,7 +1,15 @@
 import random
 from pathlib import Path
 
-from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QRect, QPropertyAnimation, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    Qt,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QCursor, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -196,16 +204,16 @@ class PhotoSortGameView(QWidget):
         stack_panel = QFrame()
         stack_panel.setObjectName("PhotoStackPanel")
         stack_panel.setStyleSheet(
-            "QFrame#PhotoStackPanel {"
-            "border: 0; background: transparent;"
-            "}"
+            "QFrame#PhotoStackPanel {border: 0; background: transparent;}"
         )
         stack_layout = QVBoxLayout(stack_panel)
         stack_layout.setContentsMargins(0, 0, 0, 0)
 
         self._stack_container = QFrame()
         self._stack_container.setMinimumSize(380, 290)
-        self._stack_container.setStyleSheet("QFrame { border: 0; background: transparent; }")
+        self._stack_container.setStyleSheet(
+            "QFrame { border: 0; background: transparent; }"
+        )
         self._stack_container.installEventFilter(self)
 
         self._back_card_far = QFrame(self._stack_container)
@@ -518,7 +526,9 @@ class PhotoSortGameView(QWidget):
             QApplication.restoreOverrideCursor()
 
         QApplication.setOverrideCursor(
-            QCursor(cursor_pixmap, cursor_pixmap.width() // 2, cursor_pixmap.height() // 2)
+            QCursor(
+                cursor_pixmap, cursor_pixmap.width() // 2, cursor_pixmap.height() // 2
+            )
         )
         self._cursor_active = True
 

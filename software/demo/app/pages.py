@@ -303,9 +303,7 @@ class MappingPage(QWidget):
     def show_listening_banner(self, gesture: str = ""):
         self._set_listening_banner_style()
         gesture_text = gesture.upper() if gesture else "CURRENT"
-        self.listening_label.setText(
-            f"LISTENING: SAY WHAT {gesture_text} SHOULD DO"
-        )
+        self.listening_label.setText(f"LISTENING: SAY WHAT {gesture_text} SHOULD DO")
         self.listening_label.setVisible(True)
 
     def show_success_banner(self, remap_text: str):
