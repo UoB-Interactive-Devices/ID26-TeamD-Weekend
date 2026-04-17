@@ -82,7 +82,7 @@ class FineTuningPage(QWidget):
         subtitle.setObjectName("Subtitle")
         subtitle.setWordWrap(True)
 
-        self.step_hint = QLabel("STEP 1 OF 7")
+        self.step_hint = QLabel("STEP 1")
         self.step_hint.setStyleSheet(
             "font-size: 14px; font-weight: 700; color: #1c5e8b; letter-spacing: 1px;"
         )

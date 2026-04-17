@@ -159,6 +159,14 @@ class DemoMainWindow(QMainWindow):
         )
         self.stack.setCurrentWidget(self.calibration_page)
 
+    def _fine_tune_total_steps(self) -> int:
+        return len(self._fine_tune_classes) + 2
+
+    def _set_fine_tune_step_hint(self, step_number: int):
+        self.fine_tuning_page.set_step_hint(
+            f"STEP {step_number} OF {self._fine_tune_total_steps()}"
+        )
+
     def _sync_mapping_views(self):
         self.mapping_page.set_mapping(self.custom_mapping)
         self.dashboard_page.set_mapping(self.custom_mapping)
@@ -228,7 +236,7 @@ class DemoMainWindow(QMainWindow):
         self._fine_tune_started = False
         self._fine_tune_collecting = False
         self._fine_tune_class_index = 0
-        self.fine_tuning_page.set_step_hint("STEP 1 OF 7")
+        self._set_fine_tune_step_hint(1)
         first = self._fine_tune_classes[0]
         self.fine_tuning_page.prepare_next_gesture(
             first,
@@ -244,17 +252,28 @@ class DemoMainWindow(QMainWindow):
         self._fine_tune_started = True
         self._fine_tune_collecting = False
         self._fine_tune_class_index = 0
-        self.fine_tuning_page.set_step_hint("STEP 2 OF 7")
+        self._set_fine_tune_step_hint(2)
         self.request_collection.emit(list(self._fine_tune_classes), SAMPLES_PER_CLASS)
-        first = self._fine_tune_classes[0].upper()
+        first_gesture = self._fine_tune_classes[0]
+        first = first_gesture.upper()
         self.fine_tuning_page.prepare_next_gesture(
-            self._fine_tune_classes[0],
+            first_gesture,
             class_index=1,
             class_total=len(self._fine_tune_classes),
             per_class_total=SAMPLES_PER_CLASS,
         )
+        if first_gesture == "none":
+            prep_instruction = (
+                "Hand closing now. Prepare a relaxed neutral pose (NONE). "
+                "Press ENTER to start collection."
+            )
+        else:
+            prep_instruction = (
+                f"Hand closing now. Prepare to lean {first}. "
+                "Press ENTER to start collection."
+            )
         self.fine_tuning_page.set_instruction(
-            f"Hand closing now. Prepare to lean {first}. Press ENTER to start collection."
+            prep_instruction
         )
 
     def _start_current_class_collection(self):
@@ -263,9 +282,7 @@ class DemoMainWindow(QMainWindow):
 
         gesture = self._fine_tune_classes[self._fine_tune_class_index].upper()
         self._fine_tune_collecting = True
-        self.fine_tuning_page.set_step_hint(
-            f"STEP {self._fine_tune_class_index + 3} OF 7"
-        )
+        self._set_fine_tune_step_hint(self._fine_tune_class_index + 3)
         self.fine_tuning_page.set_instruction(
             f"Collecting {gesture}. Keep steady until all {SAMPLES_PER_CLASS} samples are complete."
         )
@@ -297,7 +314,7 @@ class DemoMainWindow(QMainWindow):
         self.fine_tuning_page.set_training_message(
             f"Collected {total_samples} samples. Starting transfer learning."
         )
-        self.fine_tuning_page.set_step_hint("STEP 7 OF 7")
+        self._set_fine_tune_step_hint(self._fine_tune_total_steps())
         self.request_fine_tune.emit()
 
     def _on_fine_tuning_complete(self, success: bool, message: str):
@@ -340,42 +357,10 @@ class DemoMainWindow(QMainWindow):
 
         macro = self.custom_mapping.get(gesture, "none")
 
-        if macro in PHOTO_SORT_CATEGORY_MACROS:
-            now = time.time()
-            if (
-                not self._photo_sort_action_armed
-                or now - self._last_photo_sort_action_time
-                < PHOTO_SORT_GESTURE_COOLDOWN_SECONDS
-            ):
-                self.dashboard_page.set_action("categorise_cooldown")
-                return
-
-            category = PHOTO_SORT_CATEGORY_MACROS[macro]
-            sorted_ok = self.dashboard_page.photo_sort_game.sort_current_photo(
-                category,
-                animate=True,
-            )
-            self._photo_sort_action_armed = False
-            self._last_photo_sort_action_time = now
-            self._pending_gesture_sort_category = category if sorted_ok else None
-            self.dashboard_page.set_action(macro if sorted_ok else "none")
-            return
-
-        if macro == PHOTO_SORT_UNDO_MACRO:
-            now = time.time()
-            if (
-                not self._photo_sort_action_armed
-                or now - self._last_photo_sort_action_time
-                < PHOTO_SORT_GESTURE_COOLDOWN_SECONDS
-            ):
-                self.dashboard_page.set_action("categorise_cooldown")
-                return
-
-            undo_ok = self.dashboard_page.photo_sort_game.undo_last_sort()
-            self._photo_sort_action_armed = False
-            self._last_photo_sort_action_time = now
-            self._pending_gesture_sort_category = None
-            self.dashboard_page.set_action(macro if undo_ok else "none")
+        if macro in PHOTO_SORT_CATEGORY_MACROS or macro == PHOTO_SORT_UNDO_MACRO:
+            # Photo-sort gestures are executed from stable gesture callbacks to avoid
+            # transitional misclassifications during motion ramp-up.
+            self.dashboard_page.set_action("categorise_waiting")
             return
 
         try:
@@ -415,6 +400,12 @@ class DemoMainWindow(QMainWindow):
         self._status_bar.showMessage("All photos sorted.")
 
     def _on_stable_gesture(self, gesture: str):
+        if self.stack.currentWidget() is self.dashboard_page:
+            macro = self.custom_mapping.get(gesture, "none")
+            if macro in PHOTO_SORT_CATEGORY_MACROS or macro == PHOTO_SORT_UNDO_MACRO:
+                self._handle_stable_photo_sort_macro(macro)
+            return
+
         if self.stack.currentWidget() is not self.mapping_page:
             return
 
@@ -426,6 +417,31 @@ class DemoMainWindow(QMainWindow):
 
         self.mapping_page.highlight_gesture(gesture)
         self._start_speech_mapping(gesture)
+
+    def _handle_stable_photo_sort_macro(self, macro: str):
+        now = time.time()
+        if now - self._last_photo_sort_action_time < PHOTO_SORT_GESTURE_COOLDOWN_SECONDS:
+            self.dashboard_page.set_action("categorise_cooldown")
+            return
+
+        if macro in PHOTO_SORT_CATEGORY_MACROS:
+            category = PHOTO_SORT_CATEGORY_MACROS[macro]
+            sorted_ok = self.dashboard_page.photo_sort_game.sort_current_photo(
+                category,
+                animate=True,
+            )
+            if sorted_ok:
+                self._last_photo_sort_action_time = now
+            self._pending_gesture_sort_category = category if sorted_ok else None
+            self.dashboard_page.set_action(macro if sorted_ok else "none")
+            return
+
+        if macro == PHOTO_SORT_UNDO_MACRO:
+            undo_ok = self.dashboard_page.photo_sort_game.undo_last_sort(animate=True)
+            if undo_ok:
+                self._last_photo_sort_action_time = now
+            self._pending_gesture_sort_category = None
+            self.dashboard_page.set_action(macro if undo_ok else "none")
 
     def _start_speech_mapping(self, gesture: str):
         self._listening = True

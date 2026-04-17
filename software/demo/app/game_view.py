@@ -184,7 +184,9 @@ class PhotoSortGameView(QWidget):
         self._cursor_active = False
         self._sort_animation: QPropertyAnimation | None = None
         self._animation_overlay: QLabel | None = None
+        self._pending_animation_mode: str | None = None
         self._pending_animation_sort: tuple[str, str] | None = None
+        self._pending_animation_undo: tuple[str, str] | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -368,7 +370,9 @@ class PhotoSortGameView(QWidget):
 
         self._top_photo.setVisible(False)
         self._animation_overlay = overlay
+        self._pending_animation_mode = "sort"
         self._pending_animation_sort = (current, category)
+        self._pending_animation_undo = None
         self._set_photo_picked_up(False)
 
         animation = QPropertyAnimation(overlay, b"geometry", self)
@@ -376,14 +380,76 @@ class PhotoSortGameView(QWidget):
         animation.setStartValue(source_rect)
         animation.setEndValue(target_rect)
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        animation.finished.connect(self._finish_sort_animation)
+        animation.finished.connect(self._finish_active_animation)
         self._sort_animation = animation
         animation.start()
         return True
 
-    def _finish_sort_animation(self):
-        pending = self._pending_animation_sort
+    def _animate_undo(self, photo_path: str, category: str) -> bool:
+        if self._sort_animation is not None:
+            return False
+
+        zone = self._drop_zones.get(category)
+        if zone is None:
+            return False
+
+        target_pos = self._top_photo.mapTo(self, QPoint(0, 0))
+        target_rect = QRect(target_pos, self._top_photo.size())
+
+        zone_center = zone.mapTo(self, zone.rect().center())
+        source_size = 44
+        source_rect = QRect(
+            zone_center.x() - source_size // 2,
+            zone_center.y() - source_size // 2,
+            source_size,
+            source_size,
+        )
+
+        source_pixmap = self.get_photo_pixmap(photo_path)
+        if source_pixmap.isNull():
+            return False
+
+        overlay = QLabel(self)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setGeometry(source_rect)
+        overlay.setStyleSheet(
+            "border: 2px solid #4b7aa3; border-radius: 10px; background: #ffffff;"
+        )
+        overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overlay.setPixmap(
+            source_pixmap.scaled(
+                source_rect.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        overlay.show()
+
+        self._top_photo.setVisible(False)
+        self._animation_overlay = overlay
+        self._pending_animation_mode = "undo"
         self._pending_animation_sort = None
+        self._pending_animation_undo = (photo_path, category)
+        self._set_photo_picked_up(False)
+
+        animation = QPropertyAnimation(overlay, b"geometry", self)
+        animation.setDuration(240)
+        animation.setStartValue(source_rect)
+        animation.setEndValue(target_rect)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(self._finish_active_animation)
+        self._sort_animation = animation
+        animation.start()
+        return True
+
+    def _finish_active_animation(self):
+        pending_mode = self._pending_animation_mode
+        pending_sort = self._pending_animation_sort
+        pending_undo = self._pending_animation_undo
+
+        self._pending_animation_mode = None
+        self._pending_animation_sort = None
+        self._pending_animation_undo = None
 
         if self._animation_overlay is not None:
             self._animation_overlay.deleteLater()
@@ -391,17 +457,16 @@ class PhotoSortGameView(QWidget):
 
         self._top_photo.setVisible(True)
 
-        if pending is not None:
-            current, category = pending
+        if pending_mode == "sort" and pending_sort is not None:
+            current, category = pending_sort
             self._commit_sort(category, current)
+        elif pending_mode == "undo" and pending_undo is not None:
+            photo_path, category = pending_undo
+            self._commit_undo(photo_path, category)
 
         self._sort_animation = None
 
-    def undo_last_sort(self) -> bool:
-        if not self._history:
-            return False
-
-        photo_path, category = self._history.pop()
+    def _commit_undo(self, photo_path: str, category: str):
         self._photo_queue.insert(0, photo_path)
 
         grouped = self._grouped_photos.get(category, [])
@@ -412,6 +477,20 @@ class PhotoSortGameView(QWidget):
 
         self._set_photo_picked_up(False)
         self._refresh_ui()
+
+    def undo_last_sort(self, animate: bool = False) -> bool:
+        if not self._history:
+            return False
+
+        photo_path, category = self._history[-1]
+        if animate:
+            if not self._animate_undo(photo_path, category):
+                return False
+            self._history.pop()
+            return True
+
+        photo_path, category = self._history.pop()
+        self._commit_undo(photo_path, category)
         return True
 
     def reset(self):
@@ -421,7 +500,9 @@ class PhotoSortGameView(QWidget):
         if self._animation_overlay is not None:
             self._animation_overlay.deleteLater()
             self._animation_overlay = None
+        self._pending_animation_mode = None
         self._pending_animation_sort = None
+        self._pending_animation_undo = None
 
         self._history.clear()
         self._grouped_photos = {key: [] for key in self.CATEGORY_TITLES.keys()}

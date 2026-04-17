@@ -1,19 +1,19 @@
+import copy
 import csv
-import logging
-import os
 import pickle
 import time
-import warnings
 from collections import deque
 from pathlib import Path
 
-os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-
 import numpy as np
 import serial
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
+from torch.utils.data import DataLoader, TensorDataset
+
+from hand.train import GestureCNN, format_for_cnn
 
 from .config import (
     BAUD_RATE,
@@ -32,28 +32,6 @@ from .config import (
     STABLE_GESTURE_FRAMES,
     TOTAL_SENSORS,
 )
-
-warnings.filterwarnings(
-    "ignore",
-    message=(
-        "TensorFlow GPU support is not available on native Windows for TensorFlow >= 2.11.*"
-    ),
-)
-tf.get_logger().setLevel(logging.ERROR)
-
-
-class _FineTuneCallback(tf.keras.callbacks.Callback):
-    def __init__(self, epoch_signal: pyqtSignal):
-        super().__init__()
-        self._epoch_signal = epoch_signal
-
-    def on_epoch_end(self, epoch, logs=None):
-        logs = logs or {}
-        loss = float(logs.get("loss", 0.0))
-        accuracy = float(logs.get("accuracy", 0.0))
-        self._epoch_signal.emit(epoch + 1, loss, accuracy)
-
-
 class SerialInferenceWorker(QObject):
     connected = pyqtSignal(str)
     status_message = pyqtSignal(str)
@@ -100,9 +78,9 @@ class SerialInferenceWorker(QObject):
 
         self._model = None
         self._label_encoder = None
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self._last_seen_gesture = "none"
-        self._stable_frame_count = 0
+        self._prediction_window: deque[str] = deque(maxlen=STABLE_GESTURE_FRAMES)
         self._last_stable_emit = 0.0
 
         self._next_connect_attempt = 0.0
@@ -227,57 +205,128 @@ class SerialInferenceWorker(QObject):
             self._load_model_assets()
             assert self._model is not None
             assert self._label_encoder is not None
-            x_train = self._format_for_cnn(
+            model = self._model
+
+            x_all = format_for_cnn(
                 np.asarray(self._collection_features, dtype=np.float32)
             )
-            y_encoded = self._label_encoder.transform(self._collection_labels)
-
-            pool_layers = (
-                tf.keras.layers.MaxPooling1D,
-                tf.keras.layers.MaxPooling2D,
-                tf.keras.layers.MaxPooling3D,
-                tf.keras.layers.AveragePooling1D,
-                tf.keras.layers.AveragePooling2D,
-                tf.keras.layers.AveragePooling3D,
-                tf.keras.layers.GlobalAveragePooling1D,
-                tf.keras.layers.GlobalAveragePooling2D,
-                tf.keras.layers.GlobalAveragePooling3D,
-            )
-            conv_layers = (
-                tf.keras.layers.Conv1D,
-                tf.keras.layers.Conv2D,
-                tf.keras.layers.Conv3D,
-                tf.keras.layers.SeparableConv1D,
-                tf.keras.layers.SeparableConv2D,
-                tf.keras.layers.DepthwiseConv2D,
+            y_encoded = np.asarray(
+                self._label_encoder.transform(self._collection_labels), dtype=np.int64
             )
 
-            for layer in self._model.layers:
-                if isinstance(layer, conv_layers + pool_layers):
-                    layer.trainable = False
-                elif isinstance(layer, tf.keras.layers.Dense):
-                    layer.trainable = True
+            total_samples = len(y_encoded)
+            if total_samples < 10:
+                self.fine_tuning_complete.emit(
+                    False,
+                    "Fine-tuning requires at least 10 samples for safe validation.",
+                )
+                self._mode = "idle"
+                return
 
-            self._model.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE),
-                loss="sparse_categorical_crossentropy",
-                metrics=["accuracy"],
-            )
+            rng = np.random.default_rng(seed=42)
+            indices = np.arange(total_samples)
+            rng.shuffle(indices)
+            val_size = max(1, int(total_samples * 0.2))
+            if val_size >= total_samples:
+                val_size = total_samples - 1
 
-            self.fine_tuning_started.emit(FINE_TUNE_EPOCHS)
-            callback = _FineTuneCallback(self.fine_tuning_epoch)
+            val_indices = indices[:val_size]
+            train_indices = indices[val_size:]
 
-            self._model.fit(
-                x_train,
-                y_encoded,
-                epochs=FINE_TUNE_EPOCHS,
+            x_train = x_all[train_indices]
+            y_train = y_encoded[train_indices]
+            x_val = x_all[val_indices]
+            y_val = y_encoded[val_indices]
+
+            x_tensor = torch.from_numpy(x_train).float().to(self._device)
+            y_tensor = torch.from_numpy(y_train).to(self._device)
+            train_loader = DataLoader(
+                TensorDataset(x_tensor, y_tensor),
                 batch_size=32,
-                verbose=0,
-                callbacks=[callback],
                 shuffle=True,
             )
 
-            self.fine_tuning_complete.emit(True, "Fine-tuning complete.")
+            x_val_tensor = torch.from_numpy(x_val).float().to(self._device)
+            y_val_tensor = torch.from_numpy(y_val).to(self._device)
+
+            def evaluate_on_validation():
+                model.eval()
+                with torch.no_grad():
+                    logits = model(x_val_tensor)
+                    loss = criterion(logits, y_val_tensor)
+                    predictions = logits.argmax(dim=1)
+                    accuracy = (predictions == y_val_tensor).float().mean().item()
+                return float(loss.item()), float(accuracy)
+
+            for parameter in model.conv1.parameters():
+                parameter.requires_grad = False
+            for parameter in model.conv2.parameters():
+                parameter.requires_grad = False
+            for parameter in model.fc1.parameters():
+                parameter.requires_grad = True
+            for parameter in model.fc2.parameters():
+                parameter.requires_grad = True
+
+            criterion = nn.CrossEntropyLoss()
+            optimizer = optim.Adam(
+                [
+                    {"params": model.fc2.parameters()},
+                    {"params": model.fc1.parameters(), "weight_decay": 0.01},
+                ],
+                lr=LEARNING_RATE,
+            )
+
+            baseline_state = copy.deepcopy(model.state_dict())
+            baseline_loss, baseline_accuracy = evaluate_on_validation()
+
+            self.fine_tuning_started.emit(FINE_TUNE_EPOCHS)
+
+            model.train()
+            for epoch in range(FINE_TUNE_EPOCHS):
+                running_loss = 0.0
+                total = 0
+                correct = 0
+
+                for inputs, targets in train_loader:
+                    optimizer.zero_grad()
+                    outputs = model(inputs)
+                    loss = criterion(outputs, targets)
+                    loss.backward()
+                    optimizer.step()
+
+                    running_loss += float(loss.item()) * inputs.size(0)
+                    predictions = outputs.argmax(dim=1)
+                    total += targets.size(0)
+                    correct += int((predictions == targets).sum().item())
+
+                epoch_loss = running_loss / max(total, 1)
+                epoch_accuracy = correct / max(total, 1)
+                self.fine_tuning_epoch.emit(epoch + 1, epoch_loss, epoch_accuracy)
+
+            tuned_loss, tuned_accuracy = evaluate_on_validation()
+
+            if tuned_accuracy + 1e-6 < baseline_accuracy:
+                model.load_state_dict(baseline_state)
+                model.eval()
+                self.fine_tuning_complete.emit(
+                    True,
+                    (
+                        "Fine-tuning rejected: validation accuracy dropped "
+                        f"from {baseline_accuracy:.3f} to {tuned_accuracy:.3f}. "
+                        "Kept previous model weights."
+                    ),
+                )
+                return
+
+            model.eval()
+            torch.save(model.state_dict(), MODEL_PATH)
+            self.fine_tuning_complete.emit(
+                True,
+                (
+                    f"Fine-tuning accepted on {self._device.type.upper()}. "
+                    f"Validation accuracy {baseline_accuracy:.3f} -> {tuned_accuracy:.3f}"
+                ),
+            )
         except Exception as exc:  # pylint: disable=broad-except
             self.fine_tuning_complete.emit(False, f"Fine-tuning failed: {exc}")
         finally:
@@ -299,10 +348,11 @@ class SerialInferenceWorker(QObject):
 
         self._mode = "inference"
         self._history_buffer.clear()
-        self._last_seen_gesture = "none"
-        self._stable_frame_count = 0
+        self._prediction_window.clear()
         self._last_stable_emit = 0.0
-        self.status_message.emit("Live inference running.")
+        self.status_message.emit(
+            f"Live inference running on {self._device.type.upper()}."
+        )
 
     @pyqtSlot()
     def tap_hand(self):
@@ -474,6 +524,8 @@ class SerialInferenceWorker(QObject):
     def _prepare_collection_csv(self, csv_path: Path):
         self._close_collection_file()
 
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+
         file_exists = csv_path.exists()
         self._collection_file = open(csv_path, mode="a", newline="", encoding="utf-8")
         self._collection_writer = csv.writer(self._collection_file)
@@ -568,8 +620,17 @@ class SerialInferenceWorker(QObject):
         front = normalised[:49].reshape((7, 7))
         back = normalised[49:].reshape((6, 7))
 
-        features = self._format_for_cnn(normalised.reshape(1, -1))
-        probabilities = self._model(features, training=False).numpy()[0]
+        features = (
+            torch.from_numpy(format_for_cnn(normalised.reshape(1, -1)))
+            .float()
+            .to(self._device)
+        )
+        self._model.eval()
+        with torch.no_grad():
+            logits = self._model(features)
+            probabilities = (
+                torch.softmax(logits, dim=1).squeeze(0).detach().cpu().numpy()
+            )
         predicted_index = int(np.argmax(probabilities))
         confidence = float(probabilities[predicted_index])
         label = self._label_encoder.inverse_transform([predicted_index])[0]
@@ -578,25 +639,22 @@ class SerialInferenceWorker(QObject):
         self._update_stable_detection(label)
 
     def _update_stable_detection(self, label: str):
-        if label == "none":
-            self._last_seen_gesture = "none"
-            self._stable_frame_count = 0
+        self._prediction_window.append(label)
+
+        if label == "none" or len(self._prediction_window) < STABLE_GESTURE_FRAMES:
             return
 
-        if label == self._last_seen_gesture:
-            self._stable_frame_count += 1
-        else:
-            self._last_seen_gesture = label
-            self._stable_frame_count = 1
-
         now = time.time()
-        if (
-            self._stable_frame_count >= STABLE_GESTURE_FRAMES
-            and now - self._last_stable_emit >= STABLE_GESTURE_COOLDOWN_SECONDS
-        ):
+        if now - self._last_stable_emit < STABLE_GESTURE_COOLDOWN_SECONDS:
+            return
+
+        label_count = self._prediction_window.count(label)
+        required_votes = int(np.ceil(STABLE_GESTURE_FRAMES * 0.7))
+
+        if label_count >= required_votes:
             self.stable_gesture.emit(label)
             self._last_stable_emit = now
-            self._stable_frame_count = 0
+            self._prediction_window.clear()
 
     def _load_model_assets(self):
         if self._label_encoder is None:
@@ -608,11 +666,13 @@ class SerialInferenceWorker(QObject):
         if self._model is None:
             if not MODEL_PATH.exists():
                 raise FileNotFoundError(f"Model not found at {MODEL_PATH}")
-            self._model = tf.keras.models.load_model(MODEL_PATH)
+            assert self._label_encoder is not None
+            self._model = GestureCNN(len(self._label_encoder.classes_)).to(self._device)
 
-    @staticmethod
-    def _format_for_cnn(flat_samples: np.ndarray):
-        front = flat_samples[:, :49].reshape(-1, 7, 7)
-        back = flat_samples[:, 49:].reshape(-1, 6, 7)
-        back_padded = np.pad(back, ((0, 0), (0, 1), (0, 0)), mode="constant")
-        return np.stack([front, back_padded], axis=-1)
+            state_dict = torch.load(
+                MODEL_PATH,
+                map_location=self._device,
+                weights_only=False,
+            )
+            self._model.load_state_dict(state_dict)
+            self._model.eval()

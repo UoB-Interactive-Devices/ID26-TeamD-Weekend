@@ -17,7 +17,6 @@ dependencies:
   - matplotlib
   - pandas
   - seaborn
-  - pyqt
   - python-dotenv
   - pip
   - pip:
@@ -27,3 +26,4 @@ dependencies:
       - openai
       - SpeechRecognition
       - windows-toasts
+      - PyQt6==6.7.1

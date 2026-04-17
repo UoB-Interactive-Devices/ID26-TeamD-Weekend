@@ -1,183 +1,253 @@
-import os
-
-# Suppress TensorFlow informational messages and oneDNN warnings
-# Must be set before importing tensorflow
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-
+import copy
 import csv
 import pickle
 
-import matplotlib.pyplot as plt
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
 
-# Import TensorFlow and Keras
-import tensorflow as tf
-from sklearn.metrics import (
-    ConfusionMatrixDisplay,
-    classification_report,
-    confusion_matrix,
-)
-from sklearn.model_selection import GroupShuffleSplit
-from sklearn.preprocessing import LabelEncoder
-from tensorflow.keras import callbacks, layers, models, regularizers
-
-DATA_FILE = "processed_gesture_data.csv"
-MODEL_PATH = "gesture_cnn_model.keras"
-ENCODER_PATH = "label_encoder.pkl"
+DATA_FILES = ["data/processed_gesture_data.csv", "data/processed_gesture_data2.csv"]
+MODEL_PATH = "model/gesture_cnn_model.pth"
+ENCODER_PATH = "model/label_encoder.pkl"
 TOTAL_SENSORS = 91
 
 
-def load_data_grouped_by_session(filename):
+def load_data_grouped_by_session(filenames):
     X, y, sessions = [], [], []
 
-    with open(filename, "r") as f:
-        reader = csv.reader(f)
-        next(reader)  # Skip header
+    for filename in filenames:
+        try:
+            with open(filename, "r") as f:
+                reader = csv.reader(f)
+                next(reader)
 
-        for row in reader:
-            if len(row) >= TOTAL_SENSORS + 3:
-                label = row[TOTAL_SENSORS]
+                for row in reader:
+                    if len(row) >= TOTAL_SENSORS + 3:
+                        label = row[TOTAL_SENSORS]
+                        X.append([float(val) for val in row[:TOTAL_SENSORS]])
+                        y.append(label)
+                        sessions.append(f"{filename}_{row[TOTAL_SENSORS + 2]}")
+        except FileNotFoundError:
+            print(f"Could not find {filename}, skipping.")
 
-                X.append([float(val) for val in row[:TOTAL_SENSORS]])
-                y.append(label)
-                sessions.append(row[TOTAL_SENSORS + 2])
-
-    return np.array(X), np.array(y), np.array(sessions)
+    return np.array(X, dtype=np.float32), np.array(y), np.array(sessions)
 
 
 def format_for_cnn(X_flat):
-    """
-    Reshapes the flat 91-array into a 7x7x2 3D volume.
-    Front matrix: 7x7. Back matrix: 6x7 (padded with zeros to 7x7).
-    """
-    front = X_flat[:, :49].reshape(-1, 7, 7)
-    back = X_flat[:, 49:].reshape(-1, 6, 7)
+    front = X_flat[:, :49].reshape(-1, 1, 7, 7)
+    back = X_flat[:, 49:].reshape(-1, 1, 6, 7)
 
-    # Pad the back matrix with a row of zeros at the bottom to make it 7x7
     back_padded = np.pad(
-        back, ((0, 0), (0, 1), (0, 0)), mode="constant", constant_values=0
+        back, ((0, 0), (0, 0), (0, 1), (0, 0)), mode="constant", constant_values=0
     )
 
-    X_cnn = np.stack([front, back_padded], axis=-1)
+    X_cnn = np.concatenate([front, back_padded], axis=1)
     return X_cnn
 
 
+class GestureCNN(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.conv1 = nn.Conv2d(2, 32, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool2d(2)
+        self.dropout1 = nn.Dropout(0.2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(64 * 3 * 3, 64)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(64, num_classes)
+
+    def forward(self, x):
+        if self.training:
+            x = x + torch.randn_like(x) * 0.05
+            x = self._random_spatial_shift(x, max_shift=1)
+
+        x = torch.relu(self.conv1(x))
+        x = self.pool(x)
+        x = self.dropout1(x)
+        x = torch.relu(self.conv2(x))
+        x = self.flatten(x)
+        x = torch.relu(self.fc1(x))
+        x = self.dropout2(x)
+        x = self.fc2(x)
+        return x
+
+    @staticmethod
+    def _random_spatial_shift(x, max_shift=1):
+        if max_shift <= 0:
+            return x
+
+        shifted = x.clone()
+        for index in range(x.size(0)):
+            shift_y = int(
+                torch.randint(-max_shift, max_shift + 1, (1,), device=x.device).item()
+            )
+            shift_x = int(
+                torch.randint(-max_shift, max_shift + 1, (1,), device=x.device).item()
+            )
+            shifted[index] = torch.roll(
+                shifted[index],
+                shifts=(shift_y, shift_x),
+                dims=(-2, -1),
+            )
+        return shifted
+
+
 def main():
-    print("Loading preprocessed data...")
-    X_flat, y, session_groups = load_data_grouped_by_session(DATA_FILE)
-    print(f"Loaded {len(X_flat)} samples.")
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import (
+        ConfusionMatrixDisplay,
+        classification_report,
+        confusion_matrix,
+    )
+    from sklearn.model_selection import GroupShuffleSplit
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.utils.class_weight import compute_class_weight
 
-    print("Reshaping arrays into 7x7x2 matrices for convolutional processing...")
-    X = format_for_cnn(X_flat)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-    unique_sessions = np.unique(session_groups)
-    print(f"Found {len(unique_sessions)} unique collection passes (chunks).")
+    X_flat, y, session_groups = load_data_grouped_by_session(DATA_FILES)
 
-    if len(unique_sessions) < 2:
-        print("\nWARNING: You need at least 2 distinct passes to do a chunked split.")
+    if len(X_flat) == 0:
+        print("No valid samples found.")
         return
 
-    # Encode labels mathematically
+    X = format_for_cnn(X_flat)
+
     label_encoder = LabelEncoder()
-    y_encoded = label_encoder.fit_transform(y)
+    y_encoded = np.asarray(label_encoder.fit_transform(y), dtype=np.int64)
     num_classes = len(label_encoder.classes_)
 
-    # Split strictly by session_id (chunk)
-    print("\nSplitting data by session chunks to test on unseen hand placements...")
     gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
     train_idx, test_idx = next(gss.split(X, y_encoded, session_groups))
 
-    X_train, X_test = X[train_idx], X[test_idx]
-    y_train, y_test = y_encoded[train_idx], y_encoded[test_idx]
+    X_train, X_test = torch.tensor(X[train_idx]), torch.tensor(X[test_idx])
+    y_train, y_test = (
+        torch.tensor(y_encoded[train_idx], dtype=torch.long),
+        torch.tensor(y_encoded[test_idx], dtype=torch.long),
+    )
 
-    train_chunks = np.unique(session_groups[train_idx])
-    test_chunks = np.unique(session_groups[test_idx])
+    train_dataset = TensorDataset(X_train, y_train)
+    test_dataset = TensorDataset(X_test, y_test)
 
-    print(f"Training on {len(train_chunks)} chunks ({len(X_train)} samples)")
-    print(f"Testing on {len(test_chunks)} unseen chunks ({len(X_test)} samples)")
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-    # Build the Generalisable CNN Architecture
-    print("\nBuilding Convolutional Neural Network...")
-    model = models.Sequential(
+    model = GestureCNN(num_classes).to(device)
+    class_weights = compute_class_weight(
+        class_weight="balanced",
+        classes=np.unique(y_train.numpy()),
+        y=y_train.numpy(),
+    )
+    weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
+    criterion = nn.CrossEntropyLoss(weight=weights_tensor)
+    optimizer = optim.Adam(
         [
-            # Updated syntax for input shape
-            layers.Input(shape=(7, 7, 2)),
-            # Data Augmentation/Regularisation: Add slight noise to prevent memorisation
-            layers.GaussianNoise(0.05),
-            layers.Conv2D(32, kernel_size=(3, 3), activation="relu", padding="same"),
-            layers.MaxPooling2D(pool_size=(2, 2)),
-            # Add spatial dropout early to force reliance on multiple features
-            layers.Dropout(0.2),
-            layers.Conv2D(64, kernel_size=(3, 3), activation="relu", padding="same"),
-            layers.Flatten(),
-            # L2 Regularisation penalises the model if weights get too large
-            layers.Dense(
-                64, activation="relu", kernel_regularizer=regularizers.l2(0.01)
-            ),
-            layers.Dropout(0.5),
-            layers.Dense(num_classes, activation="softmax"),
-        ]
+            {"params": model.conv1.parameters()},
+            {"params": model.conv2.parameters()},
+            {"params": model.fc2.parameters()},
+            {"params": model.fc1.parameters(), "weight_decay": 0.01},
+        ],
+        lr=0.001,
+    )
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=3, min_lr=1e-5
     )
 
-    model.compile(
-        optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"]
-    )
+    epochs = 40
+    patience = 8
+    best_val_acc = 0.0
+    patience_counter = 0
+    best_model_weights = None
 
-    # Callbacks
-    early_stopping = callbacks.EarlyStopping(
-        monitor="val_accuracy",
-        patience=8,  # Wait a bit longer before stopping
-        restore_best_weights=True,
-        verbose=1,
-    )
+    for epoch in range(epochs):
+        model.train()
+        train_loss, train_correct, train_total = 0.0, 0, 0
 
-    # Smoothly reduce learning rate if validation accuracy plateaus
-    reduce_lr = callbacks.ReduceLROnPlateau(
-        monitor="val_accuracy", factor=0.5, patience=3, min_lr=1e-5, verbose=1
-    )
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
 
-    # Train the network
-    print("\nTraining CNN...")
-    history = model.fit(
-        X_train,
-        y_train,
-        epochs=40,  # Increased max epochs since we have heavier regularisation
-        batch_size=32,
-        validation_data=(X_test, y_test),
-        callbacks=[early_stopping, reduce_lr],
-        verbose=1,
-    )
+            train_loss += loss.item() * inputs.size(0)
+            _, predicted = outputs.max(1)
+            train_total += targets.size(0)
+            train_correct += predicted.eq(targets).sum().item()
 
-    # Evaluate
+        model.eval()
+        val_loss, val_correct, val_total = 0.0, 0, 0
+
+        with torch.no_grad():
+            for inputs, targets in test_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+
+                val_loss += loss.item() * inputs.size(0)
+                _, predicted = outputs.max(1)
+                val_total += targets.size(0)
+                val_correct += predicted.eq(targets).sum().item()
+
+        val_acc = val_correct / val_total
+        print(
+            f"Epoch {epoch + 1}/{epochs} | Val Acc: {val_acc * 100:.2f}% | Val Loss: {val_loss / val_total:.4f}"
+        )
+
+        scheduler.step(val_acc)
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            patience_counter = 0
+            best_model_weights = copy.deepcopy(model.state_dict())
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print("Early stopping triggered.")
+                break
+
+    if best_model_weights is not None:
+        model.load_state_dict(best_model_weights)
+
+    model.eval()
+    all_preds = []
+    all_targets = []
+
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs = inputs.to(device)
+            outputs = model(inputs)
+            _, predicted = outputs.max(1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_targets.extend(targets.numpy())
+
     print("\nEvaluating on hold-out chunks...")
-    test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-    print(f"Test Accuracy: {test_acc * 100:.2f}%\n")
+    print(
+        classification_report(
+            all_targets, all_preds, target_names=label_encoder.classes_
+        )
+    )
 
-    # Generate detailed report
-    y_pred_probs = model.predict(X_test, verbose=0)
-    y_pred = np.argmax(y_pred_probs, axis=1)
-    print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
-
-    # Visualise the Confusion Matrix
     print("\nGenerating confusion matrix...")
-    cm = confusion_matrix(y_test, y_pred)
+    cm = confusion_matrix(all_targets, all_preds, normalize="true")
     disp = ConfusionMatrixDisplay(
         confusion_matrix=cm, display_labels=label_encoder.classes_
     )
-
     fig, ax = plt.subplots(figsize=(10, 8))
-    disp.plot(cmap=plt.cm.Blues, ax=ax)
+    disp.plot(cmap=plt.get_cmap("Blues"), ax=ax, values_format=".2f")
     plt.title("Gesture Classification Confusion Matrix")
     plt.tight_layout()
     plt.show()
 
-    # Save the model
-    model.save(MODEL_PATH)
+    torch.save(model.state_dict(), MODEL_PATH)
     with open(ENCODER_PATH, "wb") as f:
         pickle.dump(label_encoder, f)
-
-    print(f"CNN Model saved to {MODEL_PATH}")
+    print(f"Model saved to {MODEL_PATH}")
 
 
 if __name__ == "__main__":
