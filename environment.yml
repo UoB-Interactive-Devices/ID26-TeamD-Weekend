@@ -1,9 +1,9 @@
 name: interactive_devices
 channels:
-  - defaults
-  - conda-forge
   - pytorch
   - nvidia
+  - conda-forge
+  - defaults
 dependencies:
   - python=3.12
   - numpy
