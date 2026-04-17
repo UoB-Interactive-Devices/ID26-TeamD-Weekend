@@ -1,6 +1,4 @@
-import copy
 import csv
-import pickle
 import time
 from collections import deque
 from pathlib import Path
@@ -8,12 +6,8 @@ from pathlib import Path
 import numpy as np
 import serial
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from ml.train import format_for_cnn
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
-from torch.utils.data import DataLoader, TensorDataset
-
-from hand.train import GestureCNN, format_for_cnn
 
 from .config import (
     BAUD_RATE,
@@ -32,32 +26,15 @@ from .config import (
     STABLE_GESTURE_FRAMES,
     TOTAL_SENSORS,
 )
-class SerialInferenceWorker(QObject):
-    connected = pyqtSignal(str)
-    status_message = pyqtSignal(str)
-    connection_error = pyqtSignal(str)
+from .fine_tuning import run_fine_tuning
+from .model import load_label_encoder, load_model
 
-    calibration_progress = pyqtSignal(int, int)
-    calibration_complete = pyqtSignal()
 
-    collection_instruction = pyqtSignal(str)
-    collection_progress = pyqtSignal(str, int, int, int, int)
-    collection_class_complete = pyqtSignal(str, int, int)
-    collection_complete = pyqtSignal(int)
+class Inference:
+    def __init__(self, callbacks: dict[str, callable]):
+        self._cb = callbacks
 
-    fine_tuning_started = pyqtSignal(int)
-    fine_tuning_epoch = pyqtSignal(int, float, float)
-    fine_tuning_complete = pyqtSignal(bool, str)
-
-    inference_frame = pyqtSignal(object, object, str, float)
-    stable_gesture = pyqtSignal(str)
-
-    stopped = pyqtSignal()
-
-    def __init__(self):
-        super().__init__()
         self._serial: serial.Serial | None = None
-        self._timer: QTimer | None = None
         self._running = False
 
         self._mode = "idle"
@@ -85,33 +62,19 @@ class SerialInferenceWorker(QObject):
 
         self._next_connect_attempt = 0.0
 
-    @pyqtSlot()
     def start(self):
         self._running = True
         self._connect_serial()
 
-        timer = QTimer(self)
-        timer.setInterval(0)
-        timer.timeout.connect(self._tick)
-        timer.start()
-        self._timer = timer
-
-    @pyqtSlot()
     def stop(self):
         self._running = False
         self._mode = "idle"
-
-        if self._timer is not None:
-            self._timer.stop()
-
         self._close_collection_file()
         self._cleanup_serial()
-        self.stopped.emit()
 
-    @pyqtSlot()
     def begin_calibration(self):
         if self._serial is None:
-            self.status_message.emit(
+            self._cb["status_message"](
                 "Waiting for Teensy connection before calibration."
             )
             return
@@ -124,20 +87,21 @@ class SerialInferenceWorker(QObject):
             self._serial.write(b"O")
             self._serial.reset_input_buffer()
         except serial.SerialException as exc:
-            self.connection_error.emit(f"Calibration failed to start: {exc}")
+            self._cb["connection_error"](f"Calibration failed to start: {exc}")
             return
 
-        self.calibration_progress.emit(0, NUM_BASELINE_SAMPLES)
-        self.status_message.emit("Calibrating sensors.")
+        self._cb["calibration_progress"](0, NUM_BASELINE_SAMPLES)
+        self._cb["status_message"]("Calibrating sensors.")
 
-    @pyqtSlot(list, int)
     def begin_collection(self, classes, samples_per_class):
         if self._serial is None:
-            self.status_message.emit("Waiting for Teensy connection before collection.")
+            self._cb["status_message"](
+                "Waiting for Teensy connection before collection."
+            )
             return
 
         if self._baseline is None:
-            self.status_message.emit("Calibration must complete before collection.")
+            self._cb["status_message"]("Calibration must complete before collection.")
             return
 
         self._collection_classes = classes or list(FINE_TUNE_CLASSES)
@@ -156,27 +120,26 @@ class SerialInferenceWorker(QObject):
             self._serial.write(b"F")
             self._serial.reset_input_buffer()
         except serial.SerialException as exc:
-            self.connection_error.emit(f"Collection failed to start: {exc}")
+            self._cb["connection_error"](f"Collection failed to start: {exc}")
             return
 
         first_gesture = self._collection_classes[0]
-        self.collection_instruction.emit(
+        self._cb["collection_instruction"](
             f"Hand closed. Prepare gesture {first_gesture.upper()}, then press Enter to start capture."
         )
-        self.status_message.emit("Fine-tuning session initialised.")
+        self._cb["status_message"]("Fine-tuning session initialised.")
 
-    @pyqtSlot()
     def collect_current_class(self):
         if self._serial is None:
-            self.status_message.emit("Cannot collect: Teensy is not connected.")
+            self._cb["status_message"]("Cannot collect: Teensy is not connected.")
             return
 
         if self._baseline is None:
-            self.status_message.emit("Cannot collect: calibration is missing.")
+            self._cb["status_message"]("Cannot collect: calibration is missing.")
             return
 
         if self._collection_class_index >= len(self._collection_classes):
-            self.status_message.emit("All classes already collected.")
+            self._cb["status_message"]("All classes already collected.")
             return
 
         self._collection_count = 0
@@ -184,177 +147,58 @@ class SerialInferenceWorker(QObject):
         self._mode = "collecting"
 
         gesture = self._collection_classes[self._collection_class_index]
-        self.collection_instruction.emit(
+        self._cb["collection_instruction"](
             f"Collecting {gesture.upper()} now. Keep still until the progress bar finishes."
         )
-        self.status_message.emit(
+        self._cb["status_message"](
             f"Collecting class {self._collection_class_index + 1}."
         )
 
-    @pyqtSlot()
     def fine_tune_model(self):
-        if not self._collection_features or not self._collection_labels:
-            self.fine_tuning_complete.emit(
-                False, "No collection data available for fine-tuning."
-            )
-            return
-
         self._mode = "training"
 
         try:
             self._load_model_assets()
             assert self._model is not None
             assert self._label_encoder is not None
-            model = self._model
-
-            x_all = format_for_cnn(
-                np.asarray(self._collection_features, dtype=np.float32)
+            success, message = run_fine_tuning(
+                model=self._model,
+                label_encoder=self._label_encoder,
+                collection_features=self._collection_features,
+                collection_labels=self._collection_labels,
+                device=self._device,
+                epochs=FINE_TUNE_EPOCHS,
+                learning_rate=LEARNING_RATE,
+                on_started=self._cb["fine_tuning_started"],
+                on_epoch=self._cb["fine_tuning_epoch"],
             )
-            y_encoded = np.asarray(
-                self._label_encoder.transform(self._collection_labels), dtype=np.int64
-            )
-
-            total_samples = len(y_encoded)
-            if total_samples < 10:
-                self.fine_tuning_complete.emit(
-                    False,
-                    "Fine-tuning requires at least 10 samples for safe validation.",
-                )
-                self._mode = "idle"
-                return
-
-            rng = np.random.default_rng(seed=42)
-            indices = np.arange(total_samples)
-            rng.shuffle(indices)
-            val_size = max(1, int(total_samples * 0.2))
-            if val_size >= total_samples:
-                val_size = total_samples - 1
-
-            val_indices = indices[:val_size]
-            train_indices = indices[val_size:]
-
-            x_train = x_all[train_indices]
-            y_train = y_encoded[train_indices]
-            x_val = x_all[val_indices]
-            y_val = y_encoded[val_indices]
-
-            x_tensor = torch.from_numpy(x_train).float().to(self._device)
-            y_tensor = torch.from_numpy(y_train).to(self._device)
-            train_loader = DataLoader(
-                TensorDataset(x_tensor, y_tensor),
-                batch_size=32,
-                shuffle=True,
-            )
-
-            x_val_tensor = torch.from_numpy(x_val).float().to(self._device)
-            y_val_tensor = torch.from_numpy(y_val).to(self._device)
-
-            def evaluate_on_validation():
-                model.eval()
-                with torch.no_grad():
-                    logits = model(x_val_tensor)
-                    loss = criterion(logits, y_val_tensor)
-                    predictions = logits.argmax(dim=1)
-                    accuracy = (predictions == y_val_tensor).float().mean().item()
-                return float(loss.item()), float(accuracy)
-
-            for parameter in model.conv1.parameters():
-                parameter.requires_grad = False
-            for parameter in model.conv2.parameters():
-                parameter.requires_grad = False
-            for parameter in model.fc1.parameters():
-                parameter.requires_grad = True
-            for parameter in model.fc2.parameters():
-                parameter.requires_grad = True
-
-            criterion = nn.CrossEntropyLoss()
-            optimizer = optim.Adam(
-                [
-                    {"params": model.fc2.parameters()},
-                    {"params": model.fc1.parameters(), "weight_decay": 0.01},
-                ],
-                lr=LEARNING_RATE,
-            )
-
-            baseline_state = copy.deepcopy(model.state_dict())
-            baseline_loss, baseline_accuracy = evaluate_on_validation()
-
-            self.fine_tuning_started.emit(FINE_TUNE_EPOCHS)
-
-            model.train()
-            for epoch in range(FINE_TUNE_EPOCHS):
-                running_loss = 0.0
-                total = 0
-                correct = 0
-
-                for inputs, targets in train_loader:
-                    optimizer.zero_grad()
-                    outputs = model(inputs)
-                    loss = criterion(outputs, targets)
-                    loss.backward()
-                    optimizer.step()
-
-                    running_loss += float(loss.item()) * inputs.size(0)
-                    predictions = outputs.argmax(dim=1)
-                    total += targets.size(0)
-                    correct += int((predictions == targets).sum().item())
-
-                epoch_loss = running_loss / max(total, 1)
-                epoch_accuracy = correct / max(total, 1)
-                self.fine_tuning_epoch.emit(epoch + 1, epoch_loss, epoch_accuracy)
-
-            tuned_loss, tuned_accuracy = evaluate_on_validation()
-
-            if tuned_accuracy + 1e-6 < baseline_accuracy:
-                model.load_state_dict(baseline_state)
-                model.eval()
-                self.fine_tuning_complete.emit(
-                    True,
-                    (
-                        "Fine-tuning rejected: validation accuracy dropped "
-                        f"from {baseline_accuracy:.3f} to {tuned_accuracy:.3f}. "
-                        "Kept previous model weights."
-                    ),
-                )
-                return
-
-            model.eval()
-            torch.save(model.state_dict(), MODEL_PATH)
-            self.fine_tuning_complete.emit(
-                True,
-                (
-                    f"Fine-tuning accepted on {self._device.type.upper()}. "
-                    f"Validation accuracy {baseline_accuracy:.3f} -> {tuned_accuracy:.3f}"
-                ),
-            )
+            self._cb["fine_tuning_complete"](success, message)
         except Exception as exc:  # pylint: disable=broad-except
-            self.fine_tuning_complete.emit(False, f"Fine-tuning failed: {exc}")
+            self._cb["fine_tuning_complete"](False, f"Fine-tuning failed: {exc}")
         finally:
             self._mode = "idle"
 
-    @pyqtSlot()
     def begin_inference(self):
         try:
             self._load_model_assets()
             assert self._model is not None
             assert self._label_encoder is not None
         except Exception as exc:  # pylint: disable=broad-except
-            self.connection_error.emit(f"Unable to start inference: {exc}")
+            self._cb["connection_error"](f"Unable to start inference: {exc}")
             return
 
         if self._baseline is None:
-            self.status_message.emit("Calibration baseline is missing.")
+            self._cb["status_message"]("Calibration baseline is missing.")
             return
 
         self._mode = "inference"
         self._history_buffer.clear()
         self._prediction_window.clear()
         self._last_stable_emit = 0.0
-        self.status_message.emit(
+        self._cb["status_message"](
             f"Live inference running on {self._device.type.upper()}."
         )
 
-    @pyqtSlot()
     def tap_hand(self):
         if self._serial is None or not self._serial.is_open:
             return
@@ -366,9 +210,8 @@ class SerialInferenceWorker(QObject):
             self._serial.write(b"F")
             self._serial.flush()
         except serial.SerialException:
-            self.connection_error.emit("Failed to trigger hand tap on click.")
+            self._cb["connection_error"]("Failed to trigger hand tap on click.")
 
-    @pyqtSlot()
     def notification_finger_tap(self):
         if self._serial is None or not self._serial.is_open:
             return
@@ -387,9 +230,8 @@ class SerialInferenceWorker(QObject):
                 self._write_servo_positions([0] * finger_count)
                 time.sleep(0.15)
         except serial.SerialException:
-            self.connection_error.emit("Failed to trigger notification finger taps.")
+            self._cb["connection_error"]("Failed to trigger notification finger taps.")
 
-    @pyqtSlot(int)
     def category_group_tap(self, finger_index: int):
         if self._serial is None or not self._serial.is_open:
             return
@@ -400,7 +242,7 @@ class SerialInferenceWorker(QObject):
         try:
             self._run_finger_tap_sequence([finger_index], up_angle=180, press_time=0.17)
         except serial.SerialException:
-            self.connection_error.emit("Failed to trigger category finger tap.")
+            self._cb["connection_error"]("Failed to trigger category finger tap.")
 
     def _run_finger_tap_sequence(
         self,
@@ -433,7 +275,7 @@ class SerialInferenceWorker(QObject):
         self._serial.write(packet.encode("ascii"))
         self._serial.flush()
 
-    def _tick(self):
+    def tick(self):
         if not self._running:
             return
 
@@ -462,11 +304,11 @@ class SerialInferenceWorker(QObject):
     def _connect_serial(self):
         try:
             self._serial = serial.Serial(PORT, BAUD_RATE, timeout=0.1)
-            self.connected.emit(f"Connected to {PORT} at {BAUD_RATE} baud")
-            self.status_message.emit("Teensy connected.")
+            self._cb["connected"](f"Connected to {PORT} at {BAUD_RATE} baud")
+            self._cb["status_message"]("Teensy connected.")
         except (serial.SerialException, FileNotFoundError) as exc:
             self._serial = None
-            self.connection_error.emit(f"Waiting for Teensy: {exc}")
+            self._cb["connection_error"](f"Waiting for Teensy: {exc}")
 
     def _cleanup_serial(self):
         if self._serial and self._serial.is_open:
@@ -489,7 +331,7 @@ class SerialInferenceWorker(QObject):
         try:
             raw_bytes = self._serial.read_all()
         except serial.SerialException as exc:
-            self.connection_error.emit(f"Serial read failed: {exc}")
+            self._cb["connection_error"](f"Serial read failed: {exc}")
             self._cleanup_serial()
             self._next_connect_attempt = time.time() + 1.0
             return None
@@ -511,15 +353,15 @@ class SerialInferenceWorker(QObject):
 
     def _process_calibration_sample(self, sample: np.ndarray):
         self._baseline_samples.append(sample)
-        self.calibration_progress.emit(
+        self._cb["calibration_progress"](
             len(self._baseline_samples), NUM_BASELINE_SAMPLES
         )
 
         if len(self._baseline_samples) >= NUM_BASELINE_SAMPLES:
             self._baseline = np.mean(self._baseline_samples, axis=0)
             self._mode = "idle"
-            self.calibration_complete.emit()
-            self.status_message.emit("Calibration complete.")
+            self._cb["calibration_complete"]()
+            self._cb["status_message"]("Calibration complete.")
 
     def _prepare_collection_csv(self, csv_path: Path):
         self._close_collection_file()
@@ -566,7 +408,7 @@ class SerialInferenceWorker(QObject):
         self._collection_labels.append(gesture)
 
         self._collection_count += 1
-        self.collection_progress.emit(
+        self._cb["collection_progress"](
             gesture,
             self._collection_count,
             self._samples_per_class,
@@ -583,12 +425,12 @@ class SerialInferenceWorker(QObject):
 
         if self._collection_class_index < len(self._collection_classes):
             next_gesture = self._collection_classes[self._collection_class_index]
-            self.collection_class_complete.emit(
+            self._cb["collection_class_complete"](
                 gesture,
                 self._collection_class_index,
                 len(self._collection_classes),
             )
-            self.collection_instruction.emit(
+            self._cb["collection_instruction"](
                 f"Completed {gesture.upper()}. Prepare {next_gesture.upper()}, then press Enter."
             )
             self._mode = "idle"
@@ -600,13 +442,13 @@ class SerialInferenceWorker(QObject):
         total_samples = len(self._collection_features)
         self._mode = "idle"
         self._close_collection_file()
-        self.collection_class_complete.emit(
+        self._cb["collection_class_complete"](
             gesture,
             len(self._collection_classes),
             len(self._collection_classes),
         )
-        self.collection_complete.emit(total_samples)
-        self.status_message.emit("Fine-tuning collection complete.")
+        self._cb["collection_complete"](total_samples)
+        self._cb["status_message"]("Fine-tuning collection complete.")
 
     def _process_inference_sample(self, sample: np.ndarray):
         assert self._model is not None
@@ -631,11 +473,12 @@ class SerialInferenceWorker(QObject):
             probabilities = (
                 torch.softmax(logits, dim=1).squeeze(0).detach().cpu().numpy()
             )
+
         predicted_index = int(np.argmax(probabilities))
         confidence = float(probabilities[predicted_index])
         label = self._label_encoder.inverse_transform([predicted_index])[0]
 
-        self.inference_frame.emit(front, back, label, confidence)
+        self._cb["inference_frame"](front, back, label, confidence)
         self._update_stable_detection(label)
 
     def _update_stable_detection(self, label: str):
@@ -652,27 +495,112 @@ class SerialInferenceWorker(QObject):
         required_votes = int(np.ceil(STABLE_GESTURE_FRAMES * 0.7))
 
         if label_count >= required_votes:
-            self.stable_gesture.emit(label)
+            self._cb["stable_gesture"](label)
             self._last_stable_emit = now
             self._prediction_window.clear()
 
     def _load_model_assets(self):
         if self._label_encoder is None:
-            if not ENCODER_PATH.exists():
-                raise FileNotFoundError(f"Label encoder not found at {ENCODER_PATH}")
-            with open(ENCODER_PATH, "rb") as file:
-                self._label_encoder = pickle.load(file)
+            self._label_encoder = load_label_encoder(ENCODER_PATH)
 
         if self._model is None:
-            if not MODEL_PATH.exists():
-                raise FileNotFoundError(f"Model not found at {MODEL_PATH}")
             assert self._label_encoder is not None
-            self._model = GestureCNN(len(self._label_encoder.classes_)).to(self._device)
-
-            state_dict = torch.load(
+            self._model = load_model(
                 MODEL_PATH,
-                map_location=self._device,
-                weights_only=False,
+                len(self._label_encoder.classes_),
+                self._device,
             )
-            self._model.load_state_dict(state_dict)
-            self._model.eval()
+
+
+class InferenceWorker(QObject):
+    connected = pyqtSignal(str)
+    status_message = pyqtSignal(str)
+    connection_error = pyqtSignal(str)
+
+    calibration_progress = pyqtSignal(int, int)
+    calibration_complete = pyqtSignal()
+
+    collection_instruction = pyqtSignal(str)
+    collection_progress = pyqtSignal(str, int, int, int, int)
+    collection_class_complete = pyqtSignal(str, int, int)
+    collection_complete = pyqtSignal(int)
+
+    fine_tuning_started = pyqtSignal(int)
+    fine_tuning_epoch = pyqtSignal(int, float, float)
+    fine_tuning_complete = pyqtSignal(bool, str)
+
+    inference_frame = pyqtSignal(object, object, str, float)
+    stable_gesture = pyqtSignal(str)
+
+    stopped = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._timer: QTimer | None = None
+        self._core = Inference(
+            {
+                "connected": self.connected.emit,
+                "status_message": self.status_message.emit,
+                "connection_error": self.connection_error.emit,
+                "calibration_progress": self.calibration_progress.emit,
+                "calibration_complete": self.calibration_complete.emit,
+                "collection_instruction": self.collection_instruction.emit,
+                "collection_progress": self.collection_progress.emit,
+                "collection_class_complete": self.collection_class_complete.emit,
+                "collection_complete": self.collection_complete.emit,
+                "fine_tuning_started": self.fine_tuning_started.emit,
+                "fine_tuning_epoch": self.fine_tuning_epoch.emit,
+                "fine_tuning_complete": self.fine_tuning_complete.emit,
+                "inference_frame": self.inference_frame.emit,
+                "stable_gesture": self.stable_gesture.emit,
+            }
+        )
+
+    @pyqtSlot()
+    def start(self):
+        self._core.start()
+
+        timer = QTimer(self)
+        timer.setInterval(0)
+        timer.timeout.connect(self._core.tick)
+        timer.start()
+        self._timer = timer
+
+    @pyqtSlot()
+    def stop(self):
+        if self._timer is not None:
+            self._timer.stop()
+        self._core.stop()
+        self.stopped.emit()
+
+    @pyqtSlot()
+    def begin_calibration(self):
+        self._core.begin_calibration()
+
+    @pyqtSlot(list, int)
+    def begin_collection(self, classes, samples_per_class):
+        self._core.begin_collection(classes, samples_per_class)
+
+    @pyqtSlot()
+    def collect_current_class(self):
+        self._core.collect_current_class()
+
+    @pyqtSlot()
+    def fine_tune_model(self):
+        self._core.fine_tune_model()
+
+    @pyqtSlot()
+    def begin_inference(self):
+        self._core.begin_inference()
+
+    @pyqtSlot()
+    def tap_hand(self):
+        self._core.tap_hand()
+
+    @pyqtSlot()
+    def notification_finger_tap(self):
+        self._core.notification_finger_tap()
+
+    @pyqtSlot(int)
+    def category_group_tap(self, finger_index: int):
+        self._core.category_group_tap(finger_index)

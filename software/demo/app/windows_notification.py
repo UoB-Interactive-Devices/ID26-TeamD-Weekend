@@ -1,6 +1,6 @@
 from windows_toasts import Toast, WindowsToaster
 
-_TOASTER = WindowsToaster("ID26 TeamD Demo")
+_TOASTER = WindowsToaster("Demo")
 
 
 def show_windows_toast(title: str, message: str) -> tuple[bool, str]:

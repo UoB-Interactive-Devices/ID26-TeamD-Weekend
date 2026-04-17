@@ -24,7 +24,7 @@ CLICK_DELAY = 0.5
 PHOTO_SORT_GESTURE_COOLDOWN_SECONDS = 0.5
 
 DEMO_DIR = Path(__file__).resolve().parent.parent
-HAND_DIR = DEMO_DIR.parent / "hand"
+ML_DIR = DEMO_DIR / "ml"
 ASSETS_DIR = DEMO_DIR.parent.parent / "assets"
 DATA_DIR = DEMO_DIR.parent.parent / "data"
 MODEL_DIR = DEMO_DIR.parent.parent / "model"

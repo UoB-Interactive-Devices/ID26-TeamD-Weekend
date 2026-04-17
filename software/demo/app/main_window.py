@@ -20,8 +20,8 @@ from .config import (
     PHOTO_SORT_GESTURE_COOLDOWN_SECONDS,
     SAMPLES_PER_CLASS,
 )
+from .inference import InferenceWorker
 from .pages import CalibrationPage, DashboardPage, FineTuningPage, MappingPage
-from .serial_worker import SerialInferenceWorker
 from .speech_worker import SpeechMappingWorker
 from .styles import APP_STYLESHEET
 from .windows_notification import show_windows_toast
@@ -110,7 +110,7 @@ class DemoMainWindow(QMainWindow):
         self._sync_mapping_views()
 
         self.worker_thread = QThread(self)
-        self.worker = SerialInferenceWorker()
+        self.worker = InferenceWorker()
         self.worker.moveToThread(self.worker_thread)
 
         self.worker_thread.started.connect(self.worker.start)
@@ -272,9 +272,7 @@ class DemoMainWindow(QMainWindow):
                 f"Hand closing now. Prepare to lean {first}. "
                 "Press ENTER to start collection."
             )
-        self.fine_tuning_page.set_instruction(
-            prep_instruction
-        )
+        self.fine_tuning_page.set_instruction(prep_instruction)
 
     def _start_current_class_collection(self):
         if self._fine_tune_class_index >= len(self._fine_tune_classes):
@@ -358,8 +356,6 @@ class DemoMainWindow(QMainWindow):
         macro = self.custom_mapping.get(gesture, "none")
 
         if macro in PHOTO_SORT_CATEGORY_MACROS or macro == PHOTO_SORT_UNDO_MACRO:
-            # Photo-sort gestures are executed from stable gesture callbacks to avoid
-            # transitional misclassifications during motion ramp-up.
             self.dashboard_page.set_action("categorise_waiting")
             return
 
@@ -420,7 +416,10 @@ class DemoMainWindow(QMainWindow):
 
     def _handle_stable_photo_sort_macro(self, macro: str):
         now = time.time()
-        if now - self._last_photo_sort_action_time < PHOTO_SORT_GESTURE_COOLDOWN_SECONDS:
+        if (
+            now - self._last_photo_sort_action_time
+            < PHOTO_SORT_GESTURE_COOLDOWN_SECONDS
+        ):
             self.dashboard_page.set_action("categorise_cooldown")
             return
 

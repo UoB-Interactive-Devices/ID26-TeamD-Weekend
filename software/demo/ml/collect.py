@@ -1,15 +1,15 @@
 import csv
-import os
 import random
 import time
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 import serial
 from tqdm import tqdm
 
 PORT = "COM5"
-BAUD_RATE = 2000000
+BAUD_RATE = 2_000_000
 TOTAL_SENSORS = 91
 
 PASSES = 6
@@ -20,8 +20,8 @@ NUM_BASELINE_SAMPLES = 30
 SMOOTHING_FRAMES = 3
 MAX_EXPECTED_VALUE = 4000.0
 
-
-OUTPUT_FILE = "data/processed_gesture_data.csv"
+ROOT = Path(__file__).resolve().parents[3]
+OUTPUT_FILE = ROOT / "data" / "processed_gesture_data.csv"
 
 
 def connect_to_teensy():
@@ -35,13 +35,14 @@ def calibrate_sensors(ser):
 
     while len(baseline_samples) < NUM_BASELINE_SAMPLES:
         if ser.in_waiting > 0:
-            lines = ser.read_all().decode().split("\r\n")
+            lines = ser.read_all().decode(errors="ignore").split("\r\n")
             for line in reversed(lines):
-                if line:
-                    data = [int(x) for x in line.split(",")]
-                    if len(data) == TOTAL_SENSORS:
-                        baseline_samples.append(np.array(data))
-                        break
+                if not line:
+                    continue
+                data = [int(x) for x in line.split(",")]
+                if len(data) == TOTAL_SENSORS:
+                    baseline_samples.append(np.array(data))
+                    break
 
     return np.mean(baseline_samples, axis=0)
 
@@ -53,13 +54,13 @@ def collect_batch(class_name, participant, current_pass, output_file, ser, basel
     history = deque(maxlen=SMOOTHING_FRAMES)
     ser.reset_input_buffer()
 
-    with open(output_file, "a", newline="") as f:
+    with output_file.open("a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
 
         for _ in tqdm(range(SAMPLES_PER_PASS), leave=False):
             data = []
             while len(data) != TOTAL_SENSORS:
-                line = ser.readline().decode().strip()
+                line = ser.readline().decode(errors="ignore").strip()
                 if line:
                     data = [int(x) for x in line.split(",")]
 
@@ -72,8 +73,9 @@ def collect_batch(class_name, participant, current_pass, output_file, ser, basel
 
 
 def main():
-    if not os.path.exists(OUTPUT_FILE):
-        with open(OUTPUT_FILE, "w", newline="") as f:
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not OUTPUT_FILE.exists():
+        with OUTPUT_FILE.open("w", newline="", encoding="utf-8") as f:
             headers = [f"sensor_{i}" for i in range(TOTAL_SENSORS)] + [
                 "label",
                 "participant",
@@ -97,9 +99,7 @@ def main():
 
     for current_pass in range(1, PASSES + 1):
         ser.write(b"O")
-        print(
-            "\nTake your hand off the sensor, then replace it in a new, natural position."
-        )
+        print("\nTake your hand off the sensor, then replace it in a new position.")
         input(f"Ready for Pass {current_pass}? Press Enter...")
 
         ser.write(b"F")

@@ -1,6 +1,7 @@
 import copy
 import csv
 import pickle
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -8,9 +9,13 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-DATA_FILES = ["data/processed_gesture_data.csv", "data/processed_gesture_data2.csv"]
-MODEL_PATH = "model/gesture_cnn_model.pth"
-ENCODER_PATH = "model/label_encoder.pkl"
+ROOT = Path(__file__).resolve().parents[3]
+DATA_FILES = [
+    ROOT / "data" / "processed_gesture_data.csv",
+    ROOT / "data" / "processed_gesture_data2.csv",
+]
+MODEL_PATH = ROOT / "model" / "gesture_cnn_model.pth"
+ENCODER_PATH = ROOT / "model" / "label_encoder.pkl"
 TOTAL_SENSORS = 91
 
 
@@ -19,7 +24,7 @@ def load_data_grouped_by_session(filenames):
 
     for filename in filenames:
         try:
-            with open(filename, "r") as f:
+            with filename.open("r", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 next(reader)
 
@@ -40,11 +45,14 @@ def format_for_cnn(X_flat):
     back = X_flat[:, 49:].reshape(-1, 1, 6, 7)
 
     back_padded = np.pad(
-        back, ((0, 0), (0, 0), (0, 1), (0, 0)), mode="constant", constant_values=0
+        back,
+        ((0, 0), (0, 0), (0, 1), (0, 0)),
+        mode="constant",
+        constant_values=0,
     )
 
     X_cnn = np.concatenate([front, back_padded], axis=1)
-    return X_cnn
+    return X_cnn.astype(np.float32)
 
 
 class GestureCNN(nn.Module):
@@ -233,7 +241,7 @@ def main():
         )
     )
 
-    print("\nGenerating confusion matrix...")
+    print("\nConfusion matrix...")
     cm = confusion_matrix(all_targets, all_preds, normalize="true")
     disp = ConfusionMatrixDisplay(
         confusion_matrix=cm, display_labels=label_encoder.classes_
@@ -245,7 +253,7 @@ def main():
     plt.show()
 
     torch.save(model.state_dict(), MODEL_PATH)
-    with open(ENCODER_PATH, "wb") as f:
+    with ENCODER_PATH.open("wb") as f:
         pickle.dump(label_encoder, f)
     print(f"Model saved to {MODEL_PATH}")
 

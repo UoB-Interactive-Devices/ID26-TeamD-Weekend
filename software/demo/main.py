@@ -1,15 +1,10 @@
 import os
 import signal
 import sys
-from pathlib import Path
 
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.window=false")
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication
-
-SOFTWARE_DIR = Path(__file__).resolve().parent.parent
-if str(SOFTWARE_DIR) not in sys.path:
-    sys.path.insert(0, str(SOFTWARE_DIR))
 
 
 def main():

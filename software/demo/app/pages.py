@@ -76,9 +76,7 @@ class FineTuningPage(QWidget):
         title = QLabel("Fine-Tuning")
         title.setObjectName("Title")
 
-        subtitle = QLabel(
-            "Guided single-pass capture: press Enter to advance each step."
-        )
+        subtitle = QLabel("Press Enter to advance each step.")
         subtitle.setObjectName("Subtitle")
         subtitle.setWordWrap(True)
 
@@ -366,7 +364,6 @@ class DashboardPage(QWidget):
 
         self.dashboard_hint = QLabel(
             "Photo sorting game: click the top photo to pick it up and it will follow your cursor, then click Group 1-4 to place it. "
-            "Gesture categorisation animates the photo into its group. "
             "You can also categorise by gesture. Press SPACE to return to gesture mapping."
         )
         self.dashboard_hint.setStyleSheet(
