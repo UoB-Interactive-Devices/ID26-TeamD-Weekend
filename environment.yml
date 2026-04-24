@@ -20,10 +20,9 @@ dependencies:
   - python-dotenv
   - pip
   - pip:
-      - pyaudio
       - pyautogui
       - tensorflow
       - openai
       - SpeechRecognition
-      - windows-toasts
+      - windows-toasts; platform_system == "Windows"
       - PyQt6==6.7.1
