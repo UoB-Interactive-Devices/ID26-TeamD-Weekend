@@ -29,12 +29,15 @@ from .config import (
 from .fine_tuning import run_fine_tuning
 from .model import load_label_encoder, load_model
 
+IDLE_SERIAL_DRAIN_THRESHOLD = 4096
+
 
 class Inference:
     def __init__(self, callbacks: dict[str, callable]):
         self._cb = callbacks
 
         self._serial: serial.Serial | None = None
+        self._serial_text_buffer = ""
         self._running = False
 
         self._mode = "idle"
@@ -86,6 +89,7 @@ class Inference:
         try:
             self._serial.write(b"O")
             self._serial.reset_input_buffer()
+            self._serial_text_buffer = ""
         except serial.SerialException as exc:
             self._cb["connection_error"](f"Calibration failed to start: {exc}")
             return
@@ -119,6 +123,7 @@ class Inference:
         try:
             self._serial.write(b"F")
             self._serial.reset_input_buffer()
+            self._serial_text_buffer = ""
         except serial.SerialException as exc:
             self._cb["connection_error"](f"Collection failed to start: {exc}")
             return
@@ -286,8 +291,9 @@ class Inference:
             return
 
         if self._mode not in {"calibrating", "collecting", "inference"}:
-            if self._serial.in_waiting > 4096:
+            if self._serial.in_waiting > IDLE_SERIAL_DRAIN_THRESHOLD:
                 self._serial.read_all()
+                self._serial_text_buffer = ""
             return
 
         sample = self._read_latest_sample()
@@ -304,6 +310,9 @@ class Inference:
     def _connect_serial(self):
         try:
             self._serial = serial.Serial(PORT, BAUD_RATE, timeout=0.1)
+            self._serial_text_buffer = ""
+            self._serial.dtr = True
+            self._serial.rts = True
             self._cb["connected"](f"Connected to {PORT} at {BAUD_RATE} baud")
             self._cb["status_message"]("Teensy connected.")
         except (serial.SerialException, FileNotFoundError) as exc:
@@ -323,6 +332,7 @@ class Inference:
             except serial.SerialException:
                 pass
         self._serial = None
+        self._serial_text_buffer = ""
 
     def _read_latest_sample(self):
         if self._serial is None or self._serial.in_waiting <= 0:
@@ -339,8 +349,23 @@ class Inference:
         if raw_bytes is None:
             return None
 
-        lines = raw_bytes.decode("utf-8", errors="ignore").splitlines()
-        for line in reversed(lines):
+        chunk = raw_bytes.decode("utf-8", errors="ignore")
+        if not chunk:
+            return None
+
+        self._serial_text_buffer += chunk
+        if "\n" not in self._serial_text_buffer:
+            return None
+
+        complete_text, self._serial_text_buffer = self._serial_text_buffer.rsplit(
+            "\n", maxsplit=1
+        )
+
+        for line in reversed(complete_text.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+
             try:
                 values = [int(value) for value in line.split(",")]
             except ValueError:
