@@ -1,6 +1,7 @@
 from pathlib import Path
+import platform
 
-PORT = "COM5"
+PORT = "COM5" if platform.system() == "Windows" else "/dev/ttyACM0"
 BAUD_RATE = 2_000_000
 TOTAL_SENSORS = 91
 
