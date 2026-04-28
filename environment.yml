@@ -26,3 +26,4 @@ dependencies:
       - SpeechRecognition
       - windows-toasts; platform_system == "Windows"
       - PyQt6==6.7.1
+      - pyaudio
